@@ -17,7 +17,9 @@ export type BuildingKind =
   | 'hospital'
   | 'station'
   | 'quay'
-  | 'capsized';
+  | 'capsized'
+  | 'barn'
+  | 'brokenDeck';
 
 export interface BuildingDef {
   kind: BuildingKind;
@@ -61,6 +63,8 @@ export interface ScatterDef {
   rocks?: number;
   bushes?: number;
   trees?: number;
+  /** Hedgerows along a rotated grid of field boundaries. */
+  hedges?: { spacing: number; angle: number; extent: number };
 }
 
 export interface LevelDef {
@@ -72,6 +76,8 @@ export interface LevelDef {
   terrain: TerrainConfig;
   /** Sea surface height, if the level has open water. */
   seaLevel?: number;
+  /** Look of the water: open sea (default) or a muddy river in flood. */
+  waterStyle?: 'sea' | 'river';
   wind?: WindDef;
   /** Default visible height for the camera in metres. */
   viewHeight?: number;

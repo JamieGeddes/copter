@@ -154,6 +154,13 @@ canvas {
   font-weight: 700;
 }
 
+.load-mass {
+  font-size: 13px;
+  font-weight: 700;
+  min-width: 42px;
+  text-align: right;
+}
+
 .passengers {
   color: #b7f5a0;
 }
@@ -329,6 +336,10 @@ canvas {
 
 .marker.area {
   color: #9fd6ff;
+}
+
+.marker.cargo {
+  color: #ffd48a;
 }
 
 .marker.fuel {

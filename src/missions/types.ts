@@ -1,3 +1,7 @@
+import type { CargoDef } from './Cargo';
+
+export type { CargoDef };
+
 export interface GateDef {
   x: number;
   z: number;
@@ -14,7 +18,21 @@ export type ObjectiveDef =
   | { kind: 'gates'; text: string; gates: GateDef[] }
   | { kind: 'land'; text: string; pad: string }
   | { kind: 'rescue'; text: string; survivors: string[] }
-  | { kind: 'deliver'; text: string; pad: string };
+  | { kind: 'deliver'; text: string; pad: string }
+  | { kind: 'hook'; text: string; cargo: string }
+  | {
+      kind: 'place';
+      text: string;
+      /** Loads that must all be set down and released inside the zone. */
+      cargo: string[];
+      label: string;
+      x: number;
+      z: number;
+      radius: number;
+      /** Required load heading, if any. Loads are treated as end-for-end symmetric. */
+      heading?: number;
+      headingTolerance?: number;
+    };
 
 export type SurvivorPlacement = 'water' | 'boat' | 'rocks';
 
@@ -51,4 +69,6 @@ export interface MissionDef {
   searchArea?: { x: number; z: number; radius: number; label: string };
   /** Distance at which survivors become visible on the HUD. */
   spotRange?: number;
+  /** Underslung loads for heavy-lift missions. */
+  cargo?: CargoDef[];
 }

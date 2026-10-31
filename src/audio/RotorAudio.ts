@@ -8,6 +8,9 @@ export class RotorAudio {
   private chopGain?: GainNode;
   private lfo?: OscillatorNode;
   private lfoDepth?: GainNode;
+  /** Second chop for tandem rotors, slightly detuned so the two beat against each other. */
+  private lfo2?: OscillatorNode;
+  private lfo2Depth?: GainNode;
   private noiseFilter?: BiquadFilterNode;
   private drone?: OscillatorNode;
   private droneGain?: GainNode;
@@ -50,6 +53,12 @@ export class RotorAudio {
     this.lfoDepth = ctx.createGain();
     this.lfoDepth.gain.value = 0;
     this.lfo.connect(this.lfoDepth).connect(this.chopGain.gain);
+    this.lfo2 = ctx.createOscillator();
+    this.lfo2.type = 'sawtooth';
+    this.lfo2.frequency.value = 0;
+    this.lfo2Depth = ctx.createGain();
+    this.lfo2Depth.gain.value = 0;
+    this.lfo2.connect(this.lfo2Depth).connect(this.chopGain.gain);
 
     noise.connect(this.noiseFilter).connect(this.chopGain).connect(this.master);
 
@@ -70,6 +79,7 @@ export class RotorAudio {
 
     noise.start();
     this.lfo.start();
+    this.lfo2.start();
     this.drone.start();
     this.whine.start();
   }
@@ -96,8 +106,9 @@ export class RotorAudio {
    * @param spool rotor speed 0..1
    * @param load collective effort 0..1 (climbing or manoeuvring makes it beat harder)
    * @param bladeRate blade passes per second at full rotor speed
+   * @param twin tandem rotors: adds a second, detuned chop
    */
-  update(spool: number, load: number, bladeRate = 10.5): void {
+  update(spool: number, load: number, bladeRate = 10.5, twin = false): void {
     const ctx = this.ctx;
     if (!ctx || !this.lfo || !this.chopGain || !this.lfoDepth || !this.noiseFilter || !this.drone || !this.droneGain || !this.whine || !this.whineGain) return;
     const t = ctx.currentTime;
@@ -106,6 +117,10 @@ export class RotorAudio {
     const level = Math.min(1, spool * 1.2);
     this.chopGain.gain.setTargetAtTime(level * (0.35 + load * 0.15), t, k);
     this.lfoDepth.gain.setTargetAtTime(level * (0.25 + load * 0.2), t, k);
+    if (this.lfo2 && this.lfo2Depth) {
+      this.lfo2.frequency.setTargetAtTime(Math.max(0.01, bladeRate * spool * 1.035), t, k);
+      this.lfo2Depth.gain.setTargetAtTime(twin ? level * (0.2 + load * 0.15) : 0, t, k);
+    }
     this.noiseFilter.frequency.setTargetAtTime(280 + spool * 380 + load * 420, t, k);
     this.drone.frequency.setTargetAtTime(30 + spool * 28, t, k);
     this.droneGain.gain.setTargetAtTime(spool * 0.14, t, k);

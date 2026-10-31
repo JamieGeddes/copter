@@ -1,5 +1,6 @@
 import { LevelDef } from '../world/level';
 import { FLIGHT_SCHOOL } from './flightSchool';
+import { HEAVY_LIFT } from './heavyLift';
 import { SEA_RESCUE } from './seaRescue';
 
 export interface CampaignEntry {
@@ -24,7 +25,7 @@ const entry = (level: LevelDef, aircraft: string): CampaignEntry => ({
 export const CAMPAIGN: CampaignEntry[] = [
   entry(FLIGHT_SCHOOL, 'Kestrel K-1'),
   entry(SEA_RESCUE, 'Albatross HAR-3'),
-  { id: 'heavy-lift', title: 'Heavy Lift', aircraft: 'Hauler CH-4 (twin rotor)', skill: 'Swinging underslung loads', summary: 'Carry bridge sections to a village cut off by floods.' },
+  entry(HEAVY_LIFT, 'Hauler CH-4'),
   { id: 'wildfire', title: 'Wildfire', aircraft: 'Bucketeer UH-2', skill: 'Route planning and timing', summary: 'Scoop water from the lake and stop the fire reaching the town.' },
   { id: 'mountain', title: 'Mountain Rescue', aircraft: 'Chamois AS-5', skill: 'Terrain flying in thin air', summary: 'Pluck stranded climbers from narrow ledges.' },
   { id: 'medevac', title: 'Night Medevac', aircraft: 'Lifeline EC-1', skill: 'Speed and tight landings', summary: 'Race casualties across the city by searchlight.' },

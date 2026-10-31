@@ -207,7 +207,45 @@ export class World {
         placed++;
       }
     }
+    const hedges = this.level.scatter.hedges;
+    if (hedges) this.placeHedges(hedges, rng, out);
     return out;
+  }
+
+  /** Bushes, with the odd tree, along field boundaries, leaving gaps for gates. */
+  private placeHedges(h: { spacing: number; angle: number; extent: number }, rng: () => number, out: ScatterItem[]): void {
+    const ca = Math.cos(h.angle);
+    const sa = Math.sin(h.angle);
+    const lines = Math.floor(h.extent / h.spacing);
+    for (const along of [false, true]) {
+      for (let i = -lines; i <= lines; i++) {
+        const fixed = i * h.spacing;
+        let gap = 0;
+        for (let t = -h.extent; t <= h.extent; t += 4.5) {
+          if (gap > 0) {
+            gap--;
+            continue;
+          }
+          if (rng() < 0.04) gap = 3 + Math.floor(rng() * 4);
+          const u = along ? t : fixed;
+          const v = along ? fixed : t;
+          const x = u * ca - v * sa;
+          const z = u * sa + v * ca;
+          if (this.terrain.heightAt(x, z) < (this.seaLevel ?? -Infinity) + 1) continue;
+          if (this.terrain.slopeAt(x, z) > 0.2 || !this.isClear(x, z, 2)) continue;
+          const tree = rng() < 0.08;
+          out.push({
+            kind: tree ? 'tree' : 'bush',
+            x: x + (rng() - 0.5) * 1.2,
+            y: this.terrain.heightAt(x, z),
+            z: z + (rng() - 0.5) * 1.2,
+            scale: tree ? 0.9 + rng() * 0.4 : 1.2 + rng() * 0.6,
+            rotation: rng() * Math.PI * 2,
+            variant: tree ? Math.floor(rng() * 2) : Math.floor(rng() * 4),
+          });
+        }
+      }
+    }
   }
 
   private riverAt(x: number, z: number): number {

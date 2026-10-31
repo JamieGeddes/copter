@@ -62,6 +62,8 @@ export class FlightModel {
   fuel = 1;
   /** 0..1, destroyed at 1. */
   damage = 0;
+  /** Mass of any slung load in kg. */
+  payload = 0;
   private lowFuelWarned = false;
 
   constructor(spec: HeliSpec) {
@@ -80,6 +82,18 @@ export class FlightModel {
 
   get groundSpeed(): number {
     return Math.hypot(this.vx, this.vz);
+  }
+
+  /** Performance left after carrying the payload (1 = empty). */
+  get performance(): number {
+    return this.spec.mass / (this.spec.mass + this.payload);
+  }
+
+  /** Velocity change from an external pull, such as a swinging sling load. */
+  applyImpulse(dvx: number, dvz: number): void {
+    if (this.landed || this.destroyed) return;
+    this.vx += dvx;
+    this.vz += dvz;
   }
 
   /** Fraction of full lift currently available from the rotor. */
@@ -149,7 +163,8 @@ export class FlightModel {
     }
     this.tiltX = damp(this.tiltX, targetX, s.cyclicResponse, dt);
     this.tiltZ = damp(this.tiltZ, targetZ, s.cyclicResponse, dt);
-    const authority = 0.3 + 0.7 * lift;
+    const perf = this.performance;
+    const authority = (0.3 + 0.7 * lift) * perf;
     // Drag acts on airspeed, so wind pushes the aircraft unless the pilot compensates.
     const drag = s.acceleration / s.maxSpeed;
     const wx = (env.wind?.x ?? 0) * s.windFactor;
@@ -159,7 +174,8 @@ export class FlightModel {
 
     // Collective: target vertical speed, falling when the rotor lacks power.
     const ground = env.groundHeightAt(this.x, this.z);
-    let targetVy = clamp(input.climb, -1, 1) * s.climbRate;
+    const climb = clamp(input.climb, -1, 1);
+    let targetVy = climb * s.climbRate * (climb > 0 ? perf : 1);
     if (this.y - ground >= s.maxAltitude) targetVy = Math.min(targetVy, 0);
     // Landing cushion: limit the sink rate near the ground and flare harder to meet it.
     let response = s.collectiveResponse;
@@ -199,16 +215,19 @@ export class FlightModel {
 
   private resolveSolids(solids: readonly Solid[], prevY: number, events: FlightEvent[]): void {
     const s = this.spec;
+    const fx = Math.sin(this.heading);
+    const fz = Math.cos(this.heading);
+    const discs = s.rotorDiscs ?? [{ offset: 0, radius: s.rotorRadius }];
     const checks = [
-      { r: s.bodyRadius, bottom: this.y, top: this.y + s.bodyHeight },
-      { r: s.rotorRadius, bottom: this.y + s.rotorHeight - 0.15, top: this.y + s.rotorHeight + 0.15 },
+      { r: s.bodyRadius, offset: 0, bottom: this.y, top: this.y + s.bodyHeight },
+      ...discs.map((d) => ({ r: d.radius, offset: d.offset, bottom: this.y + s.rotorHeight - 0.15, top: this.y + s.rotorHeight + 0.15 })),
     ];
     for (const solid of solids) {
       // Descending onto a landable roof is a landing, handled by ground resolution.
       if (solid.landable && prevY >= solid.top - 0.01) continue;
       for (const c of checks) {
         if (c.bottom >= solid.top) continue;
-        const hit = circleVsSolid(this.x, this.z, c.r, solid);
+        const hit = circleVsSolid(this.x + fx * c.offset, this.z + fz * c.offset, c.r, solid);
         if (!hit) continue;
         this.x += hit.nx * hit.penetration;
         this.z += hit.nz * hit.penetration;

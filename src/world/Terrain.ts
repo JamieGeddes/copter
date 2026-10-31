@@ -57,10 +57,39 @@ export interface CoastConfig extends BaseTerrainConfig {
   coves: { along: number; width: number }[];
 }
 
-export type TerrainConfig = DesertConfig | CoastConfig;
+export interface FloodRiver {
+  amplitude: number;
+  wavelength: number;
+  amplitude2: number;
+  wavelength2: number;
+  halfWidth: number;
+  depth: number;
+  /** Where the river narrows (for a bridge crossing). */
+  narrows?: { x: number; halfWidth: number; span: number };
+}
+
+/** Flat farmland in a grid of fields, crossed by a wide river in flood. */
+export interface FloodplainConfig extends BaseTerrainConfig {
+  kind: 'floodplain';
+  river: FloodRiver;
+  fieldSize: number;
+  /** Rotation of the field grid in radians. */
+  fieldAngle: number;
+}
+
+export type TerrainConfig = DesertConfig | CoastConfig | FloodplainConfig;
+
+/** Centre line of a floodplain river (z for a given x). */
+export const floodRiverZ = (r: FloodRiver, x: number): number =>
+  r.amplitude * Math.sin(x / r.wavelength) + r.amplitude2 * Math.sin(x / r.wavelength2 + 1.3);
+
+/** Half-width of a floodplain river at x, including any narrows. */
+export const floodRiverHalfWidth = (r: FloodRiver, x: number): number =>
+  r.narrows ? lerp(r.halfWidth, r.narrows.halfWidth, smoothstep(r.narrows.span, 0, Math.abs(x - r.narrows.x))) : r.halfWidth;
 export type TerrainKind = TerrainConfig['kind'];
 
 const DIAG = Math.SQRT1_2;
+const fract = (v: number): number => v - Math.floor(v);
 
 /** Seaward (u) and along-coast (v) coordinates for the diagonal coastline. */
 export const coastAxes = (x: number, z: number): { u: number; v: number } => ({
@@ -90,6 +119,8 @@ export class Terrain {
   readonly packed: Float32Array;
   /** 0..1 beach sand mask (coast only). */
   readonly beach: Float32Array;
+  /** Field grid rotation (floodplain only), used for crop rows. */
+  fieldAngle = 0;
 
   constructor(size: number, cellSize: number, kind: TerrainKind = 'desert') {
     this.kind = kind;
@@ -149,7 +180,9 @@ export class Terrain {
   }
 
   static generate(cfg: TerrainConfig): Terrain {
-    return cfg.kind === 'coast' ? Terrain.generateCoast(cfg) : Terrain.generateDesert(cfg);
+    if (cfg.kind === 'coast') return Terrain.generateCoast(cfg);
+    if (cfg.kind === 'floodplain') return Terrain.generateFloodplain(cfg);
+    return Terrain.generateDesert(cfg);
   }
 
   /** Builds a desert landscape: dunes, rolling ground, mesas, a dry riverbed and boundary ridges. */
@@ -219,6 +252,37 @@ export class Terrain {
       return { h, dune: variation * 0.5 + 0.5, river: 0, beach: beachMask };
     };
     return Terrain.build(cfg, natural, noise, 'coast');
+  }
+
+  /** Builds farmland with a field grid, flooded hollows and a river channel. */
+  static generateFloodplain(cfg: FloodplainConfig): Terrain {
+    const noise = new Noise2D(cfg.seed);
+    const ca = Math.cos(cfg.fieldAngle);
+    const sa = Math.sin(cfg.fieldAngle);
+    const natural = (x: number, z: number) => {
+      const r = cfg.river;
+      const dRiver = Math.abs(z - floodRiverZ(r, x));
+      let h = 3 + noise.fbm(x / 220, z / 220, 3) * 1.6 + noise.fbm(x / 45, z / 45, 2) * 0.3;
+      // Low-lying fields near the river are under water.
+      const hollow = smoothstep(0.08, 0.4, noise.fbm(x / 150 + 20, z / 150 - 4, 3)) * smoothstep(200, 50, dRiver);
+      h -= hollow * 3.8;
+      // Gentle hills frame the valley.
+      const edgeDist = Math.max(Math.abs(x), Math.abs(z));
+      const edge = smoothstep(cfg.edgeStart, cfg.edgeStart + 130, edgeDist + noise.fbm(x / 70, z / 70, 3) * 30);
+      h = Math.max(h, edge * (22 + noise.fbm(x / 90, z / 90, 3) * 8));
+      // River channel with sloping banks.
+      const hw = floodRiverHalfWidth(r, x);
+      const channel = smoothstep(hw + 12, hw, dRiver);
+      h = lerp(h, -r.depth, channel);
+      // Field id from a rotated grid, used for crop colours.
+      const u = (x * ca + z * sa) / cfg.fieldSize;
+      const v = (-x * sa + z * ca) / cfg.fieldSize;
+      const field = fract(Math.sin(Math.floor(u) * 127.1 + Math.floor(v) * 311.7) * 43758.5453);
+      return { h, dune: field, river: channel, beach: 0 };
+    };
+    const t = Terrain.build(cfg, natural, noise, 'floodplain');
+    t.fieldAngle = cfg.fieldAngle;
+    return t;
   }
 
   private static build(

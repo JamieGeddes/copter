@@ -110,3 +110,56 @@ describe('MissionRunner', () => {
     expect(b.failReason).toBe('Out of time');
   });
 });
+
+describe('MissionRunner cargo objectives', () => {
+  const cargo = (over: Partial<import('../src/missions/MissionRunner').CargoSnapshot> = {}) => ({
+    id: 'g1',
+    x: 0,
+    z: 0,
+    heading: 0,
+    resting: true,
+    hooked: false,
+    lost: false,
+    destroyed: false,
+    ...over,
+  });
+  const place = { kind: 'place' as const, text: 'Place', cargo: ['g1'], label: 'Piers', x: 0, z: 0, radius: 2.5, heading: 0, headingTolerance: 0.25 };
+
+  it('completes a hook objective when the load is on the hook', () => {
+    const m = new MissionRunner(def({ objectives: [{ kind: 'hook', text: 'Hook', cargo: 'g1' }] }));
+    m.update(0.1, snap({ cargo: [cargo()] }));
+    expect(m.status).toBe('running');
+    m.update(0.1, snap({ cargo: [cargo({ hooked: true })] }));
+    expect(m.status).toBe('complete');
+  });
+
+  it('requires the load to be released, in position and aligned', () => {
+    const m = new MissionRunner(def({ objectives: [place] }));
+    m.update(0.1, snap({ cargo: [cargo({ hooked: true })] }));
+    m.update(0.1, snap({ cargo: [cargo({ x: 4 })] }));
+    m.update(0.1, snap({ cargo: [cargo({ heading: 0.6 })] }));
+    expect(m.status).toBe('running');
+    // End-for-end is fine for a symmetric girder.
+    m.update(0.1, snap({ cargo: [cargo({ heading: Math.PI + 0.1 })] }));
+    expect(m.status).toBe('complete');
+    expect(m.placed.has('g1')).toBe(true);
+  });
+
+  it('counts several loads into one zone', () => {
+    const m = new MissionRunner(def({ objectives: [{ ...place, cargo: ['p1', 'p2'], heading: undefined, radius: 10 }] }));
+    m.update(0.1, snap({ cargo: [cargo({ id: 'p1' }), cargo({ id: 'p2', x: 30 })] }));
+    expect(m.progress).toBe(0.5);
+    m.update(0.1, snap({ cargo: [cargo({ id: 'p1' }), cargo({ id: 'p2', x: 5 })] }));
+    expect(m.status).toBe('complete');
+  });
+
+  it('fails if a load is destroyed or lost', () => {
+    const cargoDefs = [{ id: 'g1', kind: 'girder' as const, label: 'Bridge section', x: 0, z: 0, heading: 0, mass: 1, w: 1, h: 1, d: 1 }];
+    const a = new MissionRunner(def({ cargo: cargoDefs, objectives: [place] }));
+    a.update(0.1, snap({ cargo: [cargo({ destroyed: true, lost: true })] }));
+    expect(a.failReason).toBe('Bridge section was destroyed');
+    const b = new MissionRunner(def({ cargo: cargoDefs, objectives: [place] }));
+    b.update(0.1, snap({ cargo: [cargo({ lost: true })] }));
+    expect(b.failReason).toBe('Bridge section was lost in the water');
+  });
+});

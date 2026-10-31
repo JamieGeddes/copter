@@ -7,10 +7,12 @@ import { Helicopter } from '../heli/Helicopter';
 import { AIRCRAFT } from '../heli/HeliSpec';
 import { createHeliModel } from '../heli/models';
 import { ControlAxes } from '../input/bindings';
+import { CargoEvent, CargoHint, CargoSystem } from '../missions/Cargo';
 import { medalFor, Medal } from '../missions/medals';
 import { MissionEvent, MissionRunner, MissionSnapshot } from '../missions/MissionRunner';
 import { SurvivorDef } from '../missions/types';
-import { Winch } from '../missions/Winch';
+import { Winch, WinchHint } from '../missions/Winch';
+import { CargoVisuals } from '../render/CargoVisuals';
 import { CrowdMesh } from '../render/CrowdMesh';
 import { screenToWorld } from '../render/isoMath';
 import { MissionVisuals } from '../render/MissionVisuals';
@@ -26,6 +28,25 @@ import { World } from '../world/World';
 const PHYSICS_DT = 1 / 120;
 const MS_TO_KNOTS = 1.944;
 const WASH_HEIGHT = 16;
+
+const WINCH_TEXT: Record<WinchHint, string> = {
+  none: '',
+  tooHigh: 'Winch: descend',
+  tooLow: 'Winch: climb',
+  tooFast: 'Winch: hold steady',
+  closer: 'Winch: move closer',
+  full: 'Cabin full',
+  working: 'Winching…',
+};
+
+const HOOK_TEXT: Record<Exclude<CargoHint, 'carrying'>, string> = {
+  none: '',
+  tooHigh: 'Hook: descend',
+  tooLow: 'Hook: climb',
+  closer: 'Hook: move over the load',
+  tooFast: 'Hook: hold steady',
+  hooking: 'Hooking up…',
+};
 
 export interface SessionOutcome {
   success: boolean;
@@ -43,6 +64,9 @@ export class Session {
   readonly heli: Helicopter;
   readonly runner: MissionRunner;
   readonly winch?: Winch;
+  readonly cargo?: CargoSystem;
+  private readonly cargoVisuals?: CargoVisuals;
+  private readonly hookWorld = new Vector3();
   readonly hud: Hud;
   /** Set once the mission ends; the app shows the debrief after a short pause. */
   outcome?: SessionOutcome;
@@ -81,7 +105,7 @@ export class Session {
     scene.add(createTerrainMesh(this.world.terrain));
     scene.add(createProps(this.world));
     if (level.seaLevel !== undefined) {
-      this.water = createWater(this.world.terrain, level.seaLevel);
+      this.water = createWater(this.world.terrain, level.seaLevel, level.waterStyle);
       scene.add(this.water.mesh);
     }
 
@@ -94,9 +118,14 @@ export class Session {
 
     this.runner = new MissionRunner(level.mission);
     if (level.mission.survivors?.length) this.winch = new Winch();
+    if (level.mission.cargo?.length) {
+      this.cargo = new CargoSystem(level.mission.cargo, this.world, spec.slingLength ?? 14);
+      this.cargoVisuals = new CargoVisuals(scene, this.world, this.cargo);
+    }
     this.visuals = new MissionVisuals(scene, this.world, this.runner, this.heli.visual, this.winch);
 
-    this.dust = new Particles({ capacity: 900, colour: level.terrain.kind === 'coast' ? 0xb8ab88 : 0xd9ad74, opacity: 0.55, drag: 1.6, gravity: 0.4 });
+    const dustColour = { desert: 0xd9ad74, coast: 0xb8ab88, floodplain: 0xa89a74 }[level.terrain.kind];
+    this.dust = new Particles({ capacity: 900, colour: dustColour, opacity: 0.55, drag: 1.6, gravity: 0.4 });
     this.spray = new Particles({ capacity: 900, colour: 0xe4eef0, opacity: 0.32, drag: 1.8, gravity: -1.5 });
     this.smoke = new Particles({ capacity: 500, colour: 0x3a342f, opacity: 0.6, drag: 0.6, gravity: 2.2 });
     this.fire = new Particles({ capacity: 200, colour: 0xff8a2a, opacity: 0.9, additive: true, drag: 2, gravity: 3 });
@@ -130,6 +159,12 @@ export class Session {
       input.moveZ = w.z;
       input.climb = axes.climb;
     }
+    // Lowering a slung load: ease the descent as it nears the ground so it isn't smashed.
+    const held = this.cargo?.hooked;
+    if (held && !held.resting && input.climb < 0) {
+      const clear = held.y - this.cargo!.support(held, this.world).h;
+      if (clear < 5) input.climb = Math.max(input.climb, -(0.2 + Math.max(0, clear) * 0.12));
+    }
     this.accumulator += dt;
     while (this.accumulator >= PHYSICS_DT) {
       this.accumulator -= PHYSICS_DT;
@@ -139,19 +174,79 @@ export class Session {
         const pad = this.world.padAt(f.x, f.z);
         if (pad?.service) f.service(PHYSICS_DT, 0.12, 0.06);
       }
+      this.stepCargo();
     }
     this.visuals.setVisible(true);
+    this.cargoVisuals?.setVisible(true);
     this.sync(dt);
     this.updateMission(dt);
     const load = axes ? Math.max(0, axes.climb) * 0.7 + Math.hypot(f.tiltX, f.tiltZ) * 0.4 : 0;
-    this.audio.update(f.spool, load, f.spec.id === 'albatross' ? 13 : 10.5);
+    this.audio.update(f.spool, load, f.spec.bladeRate, f.spec.twinRotor);
     this.updateHud(dt);
+  }
+
+  private stepCargo(): void {
+    if (!this.cargo) return;
+    const f = this.heli.flight;
+    const hook = f.destroyed
+      ? null
+      : {
+          x: f.x,
+          y: f.y + (f.spec.hookHeight ?? 0.5),
+          z: f.z,
+          vx: f.vx,
+          vy: f.vy,
+          vz: f.vz,
+          heading: f.heading,
+          groundSpeed: f.groundSpeed,
+          landed: f.landed,
+          mass: f.spec.mass,
+        };
+    const r = this.cargo.update(PHYSICS_DT, hook, this.world);
+    f.applyImpulse(r.dvx, r.dvz);
+    f.payload = this.cargo.liftedMass;
+    for (const e of r.events) this.onCargoEvent(e);
+  }
+
+  /** The action key: release the slung load. */
+  action(): void {
+    const e = this.cargo?.release();
+    if (e) this.onCargoEvent(e);
+  }
+
+  private onCargoEvent(e: CargoEvent): void {
+    const label = this.cargo?.item(e.id).def.label ?? 'Load';
+    switch (e.type) {
+      case 'hooked':
+        this.sfx.play('attach');
+        this.hud.message(`Hooked: ${label}`, 2);
+        break;
+      case 'released':
+        this.sfx.play('unload');
+        break;
+      case 'impact':
+        if (e.damage > 0.03) {
+          this.hud.message('Load damaged!', 1.5);
+          this.stage.iso.shake(Math.min(1, 0.2 + e.damage));
+        }
+        break;
+      case 'lost':
+      case 'destroyed':
+        this.stage.iso.shake(0.8);
+        break;
+    }
+  }
+
+  /** Heaviest damage to any load, which counts against the medal. */
+  private get cargoDamage(): number {
+    return this.cargo ? Math.max(0, ...this.cargo.items.map((i) => i.damage)) : 0;
   }
 
   /** Idle backdrop for menus: the camera drifts slowly around the main settlement. */
   demo(dt: number): void {
     this.demoAngle += dt * 0.04;
     this.visuals.setVisible(false);
+    this.cargoVisuals?.setVisible(false);
     const b = this.world.buildings;
     const cx = b.reduce((a, q) => a + q.x, 0) / Math.max(1, b.length);
     const cz = b.reduce((a, q) => a + q.z, 0) / Math.max(1, b.length);
@@ -183,6 +278,10 @@ export class Session {
       p.setScale(this.stage.pixelsPerMetre);
     }
     this.visuals.update(this.time);
+    if (this.cargo && this.cargoVisuals) {
+      this.heli.visual.hook?.getWorldPosition(this.hookWorld);
+      this.cargoVisuals.update(this.time, this.cargo, this.runner, this.hookWorld);
+    }
     if (follow) {
       this.stage.iso.follow(dt, f.x, groundY + (f.y - groundY) * 0.75, f.z, f.vx, f.vz, f.groundSpeed / f.spec.maxSpeed, this.cameraLimits());
     }
@@ -201,6 +300,16 @@ export class Session {
       destroyed: f.destroyed,
       padId: f.landed ? this.world.padAt(f.x, f.z)?.id : undefined,
       groundY: this.runner.activeGate ? this.world.groundHeightAt(this.runner.activeGate.x, this.runner.activeGate.z) : groundY,
+      cargo: this.cargo?.items.map((it) => ({
+        id: it.def.id,
+        x: it.x,
+        z: it.z,
+        heading: it.heading,
+        resting: it.resting,
+        hooked: this.cargo!.hooked === it,
+        lost: it.lost && it.damage < 1,
+        destroyed: it.damage >= 1,
+      })),
     };
 
     // Stranded without fuel away from a service pad.
@@ -235,6 +344,8 @@ export class Session {
     }
 
     for (const e of this.runner.update(dt, snap)) this.onMissionEvent(e);
+    // Delivered loads are fixed in place.
+    if (this.cargo) for (const id of this.runner.placed) this.cargo.item(id).fixed = true;
     this.spotSurvivors();
   }
 
@@ -288,13 +399,14 @@ export class Session {
     const stats: [string, string][] = [];
     if (this.gatesFlown) stats.push(['Gates', String(this.gatesFlown)]);
     if (this.level.mission.survivors) stats.push(['Rescued', `${this.runner.rescued.size} of ${this.level.mission.survivors.length}`]);
+    if (this.cargo) stats.push(['Cargo damage', `${Math.round(this.cargoDamage * 100)}%`]);
     stats.push(['Landings', String(this.landings)]);
     this.outcome = {
       success,
       reason,
       time,
-      damage: f.damage,
-      medal: success ? medalFor(time, f.damage, this.level.mission.medals) : undefined,
+      damage: Math.max(f.damage, this.cargoDamage),
+      medal: success ? medalFor(time, Math.max(f.damage, this.cargoDamage), this.level.mission.medals) : undefined,
       stats,
     };
   }
@@ -366,9 +478,38 @@ export class Session {
     } else {
       this.hud.updateWind(undefined, 0);
     }
-    this.hud.updateWinch(this.winch?.hint ?? 'none', this.winch?.state === 'raising' ? 1 : this.winch?.state === 'attaching' ? this.winch.attachProgress : 0);
+    if (this.winch) {
+      const w = this.winch;
+      this.hud.updateAssist(WINCH_TEXT[w.hint], w.hint === 'working', w.state === 'raising' ? 1 : w.state === 'attaching' ? w.attachProgress : 0);
+    } else if (this.cargo) {
+      this.hud.updateAssist(...this.cargoAssist());
+    } else {
+      this.hud.updateAssist('', false, 0);
+    }
+    const held = this.cargo?.hooked;
+    this.hud.updateLoad(held ? { mass: held.def.mass, damage: held.damage } : undefined);
     this.hud.setWaypoints(this.waypoints());
     this.hud.tick(dt);
+  }
+
+  /** Guidance for the cargo hook: how to hook up, and how far off the placement is. */
+  private cargoAssist(): [string, boolean, number] {
+    const c = this.cargo!;
+    if (c.hint !== 'carrying') return [HOOK_TEXT[c.hint], c.hint === 'hooking', c.hookProgress];
+    const load = c.hooked!;
+    const target = this.runner.placeTarget;
+    if (!target || !target.cargo.includes(load.def.id)) return [`${load.def.label} · E to release`, false, 0];
+    const dist = Math.hypot(load.x - target.x, load.z - target.z);
+    if (dist > target.radius * 4) return [`${load.def.label} · E to release`, false, 0];
+    const off: string[] = [];
+    if (dist > target.radius) off.push(`${dist.toFixed(1)} m`);
+    if (target.heading !== undefined) {
+      const diff = (Math.abs(Math.atan2(Math.sin(2 * (load.heading - target.heading)), Math.cos(2 * (load.heading - target.heading)))) / 2) * (180 / Math.PI);
+      const tol = ((target.headingTolerance ?? 0.26) * 180) / Math.PI;
+      if (diff > tol) off.push(`${Math.round(diff)}° off`);
+    }
+    if (off.length) return [`Align: ${off.join(' · ')}`, false, 0];
+    return load.resting ? ['In position: E to release', true, 1] : ['On target: lower gently', true, 0.5];
   }
 
   private project(x: number, y: number, z: number, label: string, kind: Waypoint['kind']): Waypoint {
@@ -413,6 +554,12 @@ export class Session {
     const f = this.heli.flight;
     if (f.fuel < 0.3) {
       for (const pad of this.world.pads.filter((p) => p.service)) out.push(this.project(pad.x, pad.top + 3, pad.z, 'Fuel', 'fuel'));
+    }
+    if (this.cargo) {
+      const placed = this.runner.placeTarget;
+      const next = this.runner.activeCargo.map((id) => this.cargo!.item(id)).find((it) => !it.lost && this.cargo!.hooked !== it && !it.fixed);
+      if (next && !this.cargo.hooked) out.push(this.project(next.x, next.y + next.def.h + 3, next.z, next.def.label, 'cargo'));
+      if (placed && this.cargo.hooked) out.push(this.project(placed.x, this.world.groundHeightAt(placed.x, placed.z) + 6, placed.z, placed.label, 'pad'));
     }
     if (o?.kind === 'rescue') {
       const waiting = this.visuals.waitingSurvivors().filter((s: SurvivorDef) => this.spotted.has(s.id));

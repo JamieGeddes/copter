@@ -1,4 +1,28 @@
+import { wrapAngle } from '../core/math';
 import { GateDef, MissionDef, ObjectiveDef } from './types';
+
+export interface CargoSnapshot {
+  id: string;
+  x: number;
+  z: number;
+  heading: number;
+  resting: boolean;
+  hooked: boolean;
+  lost: boolean;
+  destroyed: boolean;
+}
+
+type PlaceObjective = Extract<ObjectiveDef, { kind: 'place' }>;
+
+/** True if a load satisfies a placement objective's position and heading. */
+export const isPlaced = (c: CargoSnapshot, o: PlaceObjective): boolean => {
+  if (c.hooked || !c.resting || c.lost) return false;
+  if (Math.hypot(c.x - o.x, c.z - o.z) > o.radius) return false;
+  if (o.heading === undefined) return true;
+  // End-for-end symmetric: compare headings modulo half a turn.
+  const diff = Math.abs(wrapAngle(2 * (c.heading - o.heading))) / 2;
+  return diff <= (o.headingTolerance ?? 0.26);
+};
 
 /** What the mission needs to know about the aircraft each tick. */
 export interface MissionSnapshot {
@@ -14,6 +38,7 @@ export interface MissionSnapshot {
   padId?: string;
   /** Ground height beneath the active gate, against which gate altitude is measured. */
   groundY: number;
+  cargo?: CargoSnapshot[];
 }
 
 export type MissionEvent =
@@ -38,6 +63,10 @@ export class MissionRunner {
   /** Survivors winched aboard and not yet delivered. */
   onboard = 0;
   readonly rescued = new Set<string>();
+  /** Loads delivered by completed placement objectives. */
+  readonly placed = new Set<string>();
+  /** Loads currently inside the active placement zone and correctly set down. */
+  placedNow = 0;
   delivered = 0;
   private hoverHeld = 0;
   private gateIndex = 0;
@@ -66,6 +95,8 @@ export class MissionRunner {
         const total = this.delivered + this.onboard;
         return total === 0 ? 0 : this.delivered / total;
       }
+      case 'place':
+        return this.placedNow / o.cargo.length;
       default:
         return 0;
     }
@@ -84,6 +115,8 @@ export class MissionRunner {
         return `Rescued ${o.survivors.filter((id) => this.rescued.has(id)).length} of ${o.survivors.length} · aboard ${this.onboard}/${this.def.capacity ?? '∞'}`;
       case 'deliver':
         return `Aboard: ${this.onboard}`;
+      case 'place':
+        return o.cargo.length > 1 ? `Delivered ${this.placedNow} of ${o.cargo.length}` : '';
       default:
         return '';
     }
@@ -99,6 +132,20 @@ export class MissionRunner {
   get targetPad(): string | undefined {
     const o = this.objective;
     return o?.kind === 'land' || o?.kind === 'deliver' ? o.pad : undefined;
+  }
+
+  /** The active placement zone, if any. */
+  get placeTarget(): PlaceObjective | undefined {
+    const o = this.objective;
+    return o?.kind === 'place' ? o : undefined;
+  }
+
+  /** Loads the player should be working with now. */
+  get activeCargo(): string[] {
+    const o = this.objective;
+    if (o?.kind === 'hook') return [o.cargo];
+    if (o?.kind === 'place') return o.cargo;
+    return [];
   }
 
   get capacityLeft(): number {
@@ -118,6 +165,10 @@ export class MissionRunner {
     this.elapsed += dt;
 
     if (s.destroyed) return this.fail('The aircraft was lost', events);
+    for (const c of s.cargo ?? []) {
+      if (c.destroyed) return this.fail(`${this.cargoLabel(c.id)} was destroyed`, events);
+      if (c.lost) return this.fail(`${this.cargoLabel(c.id)} was lost in the water`, events);
+    }
     if (this.def.timeLimit !== undefined && this.elapsed > this.def.timeLimit) return this.fail('Out of time', events);
 
     // Allow several objectives to complete in one tick (e.g. landing completes two).
@@ -164,6 +215,16 @@ export class MissionRunner {
         return s.landed && s.padId === o.pad;
       case 'rescue':
         return o.survivors.every((id) => this.rescued.has(id));
+      case 'hook':
+        return !!s.cargo?.find((c) => c.id === o.cargo)?.hooked;
+      case 'place': {
+        const loads = (s.cargo ?? []).filter((c) => o.cargo.includes(c.id));
+        this.placedNow = loads.filter((c) => isPlaced(c, o)).length;
+        if (this.placedNow < o.cargo.length) return false;
+        for (const id of o.cargo) this.placed.add(id);
+        this.placedNow = 0;
+        return true;
+      }
       case 'deliver': {
         if (!(s.landed && s.padId === o.pad)) {
           this.unloadTimer = 0;
@@ -181,6 +242,10 @@ export class MissionRunner {
         return this.onboard === 0;
       }
     }
+  }
+
+  private cargoLabel(id: string): string {
+    return this.def.cargo?.find((c) => c.id === id)?.label ?? 'Cargo';
   }
 
   /** Ends the mission early, e.g. when stranded without fuel. */

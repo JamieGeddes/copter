@@ -20,6 +20,43 @@ describe('Terrain', () => {
   });
 });
 
+describe('forest terrain', () => {
+  const cfg = {
+    kind: 'forest' as const,
+    seed: 11,
+    size: 600,
+    cellSize: 4,
+    edgeStart: 240,
+    lake: { x: -100, z: 0, radius: 50, depth: 5 },
+    river: { offset: 120, amplitude: 20, wavelength: 100, width: 6, depth: 3, xMin: -100, xMax: 250 },
+    flatten: [],
+    plateaus: [],
+  };
+  const t = Terrain.generate(cfg);
+
+  it('is deterministic and has a lake below the surface', () => {
+    expect(Terrain.generate(cfg).heights).toEqual(t.heights);
+    expect(t.kind).toBe('forest');
+    expect(t.heightAt(-100, 0)).toBeLessThan(-3);
+    expect(t.river[t.index(t.cells / 2 - 25, t.cells / 2)]).toBeGreaterThan(0.9);
+  });
+
+  it('keeps woodland density in range, off the water and thinner at the lake', () => {
+    let dense = 0;
+    for (let i = 0; i < t.dune.length; i++) {
+      expect(t.dune[i]).toBeGreaterThanOrEqual(0);
+      expect(t.dune[i]).toBeLessThanOrEqual(1);
+      if (t.dune[i] > 0.5) dense++;
+    }
+    expect(dense).toBeGreaterThan(t.dune.length * 0.05);
+    expect(t.canopyAt(-100, 0)).toBe(0);
+  });
+
+  it('reports no canopy on other terrain kinds', () => {
+    expect(Terrain.generate({ ...DESERT_LEVEL.terrain, size: 200 }).canopyAt(0, 0)).toBe(0);
+  });
+});
+
 describe('World', () => {
   const world = new World(DESERT_LEVEL);
 

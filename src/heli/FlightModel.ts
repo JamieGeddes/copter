@@ -21,6 +21,8 @@ export interface FlightEnvironment {
   isWater?(x: number, z: number): boolean;
   /** Current wind vector in m/s. */
   wind?: { x: number; z: number };
+  /** Rising air in m/s, such as the heat updraft over a fire. */
+  updraft?: number;
 }
 
 export type FlightEvent =
@@ -177,6 +179,7 @@ export class FlightModel {
     const climb = clamp(input.climb, -1, 1);
     let targetVy = climb * s.climbRate * (climb > 0 ? perf : 1);
     if (this.y - ground >= s.maxAltitude) targetVy = Math.min(targetVy, 0);
+    targetVy += env.updraft ?? 0;
     // Landing cushion: limit the sink rate near the ground and flare harder to meet it.
     let response = s.collectiveResponse;
     const cushion = -(s.cushionSink + Math.max(0, this.y - ground) * s.cushionGain);

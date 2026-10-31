@@ -162,4 +162,71 @@ describe('MissionRunner cargo objectives', () => {
     b.update(0.1, snap({ cargo: [cargo({ lost: true })] }));
     expect(b.failReason).toBe('Bridge section was lost in the water');
   });
+  describe('fire objectives', () => {
+    const fire = (burning: number, inZone = 0) => ({ burning, burningIn: () => inZone });
+    const protect = {
+      kind: 'protect' as const,
+      text: 'Save the town',
+      label: 'the town',
+      x: 0,
+      z: 0,
+      radius: 50,
+      seconds: 10,
+    };
+
+    it('completes fill once the bucket is full', () => {
+      const m = new MissionRunner(def({ objectives: [{ kind: 'fill', text: 'Fill' }] }));
+      m.update(0.1, snap({ bucket: { fill: 0.5 } }));
+      expect(m.status).toBe('running');
+      m.update(0.1, snap({ bucket: { fill: 1 } }));
+      expect(m.status).toBe('complete');
+    });
+
+    it('completes protect when the zone stays clear for the time', () => {
+      const m = new MissionRunner(def({ objectives: [protect] }));
+      for (let i = 0; i < 50; i++) m.update(0.1, snap({ fire: fire(20) }));
+      expect(m.progress).toBeCloseTo(0.5);
+      expect(m.detail).toContain('5 / 10');
+      for (let i = 0; i < 60; i++) m.update(0.1, snap({ fire: fire(20) }));
+      expect(m.status).toBe('complete');
+    });
+
+    it('fails protect when fire reaches the zone', () => {
+      const m = new MissionRunner(def({ objectives: [protect] }));
+      m.update(0.1, snap({ fire: fire(20) }));
+      m.update(0.1, snap({ fire: fire(21, 1) }));
+      expect(m.status).toBe('failed');
+      expect(m.failReason).toBe('The fire reached the town');
+    });
+
+    it('fails when the fire reaches the zone before its objective is active', () => {
+      const m = new MissionRunner(def({ objectives: [{ kind: 'fill', text: 'Fill' }, protect] }));
+      m.update(0.1, snap({ fire: fire(20, 3), bucket: { fill: 0 } }));
+      expect(m.status).toBe('failed');
+    });
+
+    it('stops caring about the zone once protect is complete', () => {
+      const m = new MissionRunner(def({ objectives: [protect, { kind: 'land', text: 'Land', pad: 'a' }] }));
+      for (let i = 0; i < 110; i++) m.update(0.1, snap({ fire: fire(20) }));
+      expect(m.index).toBe(1);
+      m.update(0.1, snap({ fire: fire(20, 5) }));
+      expect(m.status).toBe('running');
+    });
+
+    it('completes protect early when orExtinguished and the fire is out', () => {
+      const m = new MissionRunner(def({ objectives: [{ ...protect, orExtinguished: true }] }));
+      m.update(0.1, snap({ fire: fire(20) }));
+      expect(m.status).toBe('running');
+      m.update(0.1, snap({ fire: fire(0) }));
+      expect(m.status).toBe('complete');
+    });
+
+    it('completes extinguish when no cells burn', () => {
+      const m = new MissionRunner(def({ objectives: [{ kind: 'extinguish', text: 'Out' }] }));
+      m.update(0.1, snap({ fire: fire(3) }));
+      expect(m.status).toBe('running');
+      m.update(0.1, snap({ fire: fire(0) }));
+      expect(m.status).toBe('complete');
+    });
+  });
 });

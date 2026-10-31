@@ -25,11 +25,13 @@ export interface Water {
   update(time: number): void;
 }
 
-export type WaterStyle = 'sea' | 'river';
+export type WaterStyle = 'sea' | 'river' | 'lake';
 
 const STYLES: Record<WaterStyle, { shallow: string; mid: string; deep: string; flow: string; clarity: string }> = {
   sea: { shallow: '0.30, 0.66, 0.66', mid: '0.10, 0.42, 0.52', deep: '0.05, 0.24, 0.36', flow: '0.0, 0.0', clarity: '9.0' },
   // Brown flood water: opaque quickly and streaming downstream (+x).
+  // Still, dark forest lake with a slow drift.
+  lake: { shallow: '0.24, 0.45, 0.40', mid: '0.09, 0.30, 0.34', deep: '0.04, 0.17, 0.23', flow: '0.15, 0.05', clarity: '5.0' },
   river: { shallow: '0.30, 0.25, 0.14', mid: '0.21, 0.18, 0.10', deep: '0.15, 0.13, 0.07', flow: '1.6, 0.0', clarity: '2.5' },
 };
 

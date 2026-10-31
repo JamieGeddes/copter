@@ -41,6 +41,14 @@ canvas {
   background: radial-gradient(ellipse at 50% 45%, transparent 55%, rgba(60, 30, 10, 0.32) 100%);
 }
 
+.haze {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 0.6s linear;
+  background: radial-gradient(ellipse at 50% 50%, rgba(92, 76, 60, 0.35) 20%, rgba(60, 48, 40, 0.78) 100%);
+}
+
 .panel {
   position: absolute;
   background: var(--panel);
@@ -252,6 +260,30 @@ canvas {
   animation: blink 0.6s steps(2) infinite;
 }
 
+.fill.threat {
+  background: linear-gradient(90deg, #6fbf5a, #f0a930);
+}
+
+.fill.threat.high {
+  background: var(--red);
+  animation: blink 0.6s steps(2) infinite;
+}
+
+.fill.water {
+  background: linear-gradient(90deg, #3d8fc4, #8fd0f0);
+}
+
+.readout.small {
+  font-size: 15px;
+  margin-top: 6px;
+}
+
+.bucket-text {
+  margin-top: 4px;
+  font-size: 12px;
+  opacity: 0.8;
+}
+
 .fill.damage {
   background: linear-gradient(90deg, #c23b2a, var(--red));
 }
@@ -340,6 +372,18 @@ canvas {
 
 .marker.cargo {
   color: #ffd48a;
+}
+
+.marker.water {
+  color: #8fd0f0;
+}
+
+.marker.fire {
+  color: #ff9a4a;
+}
+
+.marker.town {
+  color: #fff3c4;
 }
 
 .marker.fuel {

@@ -7,12 +7,15 @@ import { Helicopter } from '../heli/Helicopter';
 import { AIRCRAFT } from '../heli/HeliSpec';
 import { createHeliModel } from '../heli/models';
 import { ControlAxes } from '../input/bindings';
+import { Bucket, BucketEnv, BucketHint, Spray } from '../missions/Bucket';
 import { CargoEvent, CargoHint, CargoSystem } from '../missions/Cargo';
 import { medalFor, Medal } from '../missions/medals';
 import { MissionEvent, MissionRunner, MissionSnapshot } from '../missions/MissionRunner';
 import { SurvivorDef } from '../missions/types';
 import { Winch, WinchHint } from '../missions/Winch';
+import { BucketVisuals } from '../render/BucketVisuals';
 import { CargoVisuals } from '../render/CargoVisuals';
+import { FireVisuals } from '../render/FireVisuals';
 import { CrowdMesh } from '../render/CrowdMesh';
 import { screenToWorld } from '../render/isoMath';
 import { MissionVisuals } from '../render/MissionVisuals';
@@ -21,7 +24,10 @@ import { Stage } from '../render/Stage';
 import { createTerrainMesh } from '../render/TerrainMesh';
 import { createWater, Water } from '../render/WaterMesh';
 import { Hud, Waypoint } from '../ui/Hud';
+import { clamp, damp } from './math';
 import { CrowdSim } from '../world/CrowdSim';
+import { FireGrid } from '../world/FireGrid';
+import { createFireGrid } from '../world/fuel';
 import { LevelDef } from '../world/level';
 import { World } from '../world/World';
 
@@ -38,6 +44,19 @@ const WINCH_TEXT: Record<WinchHint, string> = {
   full: 'Cabin full',
   working: 'Winching…',
 };
+
+const BUCKET_TEXT: Record<BucketHint, string> = {
+  empty: 'Bucket empty: dip it in the lake',
+  dipping: 'Filling…',
+  tooFast: 'Too fast to fill: slow down',
+  full: 'Bucket full · E to drop',
+  dropping: 'Releasing water',
+  part: 'Part full · E to drop',
+};
+
+/** Heat updraft and turbulence are felt within this distance of the fire. */
+const HEAT_RADIUS = 45;
+const FIRE_STEP = 0.1;
 
 const HOOK_TEXT: Record<Exclude<CargoHint, 'carrying'>, string> = {
   none: '',
@@ -67,6 +86,20 @@ export class Session {
   readonly cargo?: CargoSystem;
   private readonly cargoVisuals?: CargoVisuals;
   private readonly hookWorld = new Vector3();
+  /** Fire grid and water bucket, on wildfire levels. */
+  readonly blaze?: FireGrid;
+  readonly bucket?: Bucket;
+  private readonly bucketEnv: BucketEnv;
+  private fireClock = 0;
+  private threat = 0;
+  private smokeDensity = 0;
+  private frontX = 0;
+  private frontZ = 0;
+  private gustX = 0;
+  private gustZ = 0;
+  private gustY = 0;
+  private gustTimer = 0;
+  private heat = 0;
   readonly hud: Hud;
   /** Set once the mission ends; the app shows the debrief after a short pause. */
   outcome?: SessionOutcome;
@@ -88,6 +121,9 @@ export class Session {
   private accumulator = 0;
   private time = 0;
   private washBudget = 0;
+  private splash?: { x: number; z: number; y: number; radius: number; height: number; hits: number };
+  private fireVisuals?: FireVisuals;
+  private bucketVisuals?: BucketVisuals;
   private smokeBudget = 0;
   private flareBudget = 0;
   private gatesFlown = 0;
@@ -102,8 +138,10 @@ export class Session {
     this.world = new World(level);
     const scene = stage.newScene(level.terrain.kind);
 
-    scene.add(createTerrainMesh(this.world.terrain));
-    scene.add(createProps(this.world));
+    const terrainMesh = createTerrainMesh(this.world.terrain);
+    const props = createProps(this.world);
+    scene.add(terrainMesh);
+    scene.add(props);
     if (level.seaLevel !== undefined) {
       this.water = createWater(this.world.terrain, level.seaLevel, level.waterStyle);
       scene.add(this.water.mesh);
@@ -122,9 +160,22 @@ export class Session {
       this.cargo = new CargoSystem(level.mission.cargo, this.world, spec.slingLength ?? 14);
       this.cargoVisuals = new CargoVisuals(scene, this.world, this.cargo);
     }
+    this.bucketEnv = {
+      groundHeightAt: (x, z) => this.world.groundHeightAt(x, z),
+      isWater: (x, z) => this.world.isWater(x, z),
+      waterLevel: this.world.seaLevel,
+    };
+    if (level.fire) {
+      this.blaze = createFireGrid(this.world);
+      this.bucket = new Bucket(spec.slingLength ?? 12);
+    }
+    if (this.blaze) {
+      this.fireVisuals = new FireVisuals(scene, this.world, this.blaze, props, terrainMesh);
+      this.bucketVisuals = new BucketVisuals(scene);
+    }
     this.visuals = new MissionVisuals(scene, this.world, this.runner, this.heli.visual, this.winch);
 
-    const dustColour = { desert: 0xd9ad74, coast: 0xb8ab88, floodplain: 0xa89a74 }[level.terrain.kind];
+    const dustColour = { desert: 0xd9ad74, coast: 0xb8ab88, floodplain: 0xa89a74, forest: 0x9a8f6a }[level.terrain.kind];
     this.dust = new Particles({ capacity: 900, colour: dustColour, opacity: 0.55, drag: 1.6, gravity: 0.4 });
     this.spray = new Particles({ capacity: 900, colour: 0xe4eef0, opacity: 0.32, drag: 1.8, gravity: -1.5 });
     this.smoke = new Particles({ capacity: 500, colour: 0x3a342f, opacity: 0.6, drag: 0.6, gravity: 2.2 });
@@ -139,6 +190,8 @@ export class Session {
     const f = this.heli.flight;
     f.place(pad.x, pad.top, pad.z, level.spawnHeading);
     f.spool = 0.15;
+    const hook = this.hookState();
+    if (hook) this.bucket?.attach(hook, this.bucketEnv);
     stage.iso.setViewHeight(level.viewHeight ?? 90);
     stage.iso.snapTo(pad.x, pad.top, pad.z);
     this.sync(0);
@@ -175,9 +228,12 @@ export class Session {
         if (pad?.service) f.service(PHYSICS_DT, 0.12, 0.06);
       }
       this.stepCargo();
+      this.stepBucket();
     }
+    if (this.blaze) this.stepFire(dt);
     this.visuals.setVisible(true);
     this.cargoVisuals?.setVisible(true);
+    this.bucketVisuals?.setVisible(true);
     this.sync(dt);
     this.updateMission(dt);
     const load = axes ? Math.max(0, axes.climb) * 0.7 + Math.hypot(f.tiltX, f.tiltZ) * 0.4 : 0;
@@ -185,10 +241,9 @@ export class Session {
     this.updateHud(dt);
   }
 
-  private stepCargo(): void {
-    if (!this.cargo) return;
+  private hookState() {
     const f = this.heli.flight;
-    const hook = f.destroyed
+    return f.destroyed
       ? null
       : {
           x: f.x,
@@ -202,14 +257,131 @@ export class Session {
           landed: f.landed,
           mass: f.spec.mass,
         };
+  }
+
+  private stepCargo(): void {
+    if (!this.cargo) return;
+    const f = this.heli.flight;
+    const hook = this.hookState();
     const r = this.cargo.update(PHYSICS_DT, hook, this.world);
     f.applyImpulse(r.dvx, r.dvz);
     f.payload = this.cargo.liftedMass;
     for (const e of r.events) this.onCargoEvent(e);
   }
 
-  /** The action key: release the slung load. */
+  private stepBucket(): void {
+    const b = this.bucket;
+    if (!b) return;
+    const f = this.heli.flight;
+    const hook = this.hookState();
+    if (!hook) {
+      f.payload = 0;
+      return;
+    }
+    const r = b.update(PHYSICS_DT, hook, this.bucketEnv);
+    f.applyImpulse(r.dvx, r.dvz);
+    f.payload = b.liftedMass;
+    for (const e of r.events) {
+      if (e.type === 'filled') {
+        this.sfx.play('attach');
+        this.hud.message('Bucket full', 1.6);
+      }
+    }
+    if (r.spray) this.dropWater(r.spray);
+
+    // Heat over the fire shakes the aircraft about.
+    if (this.heat > 1 && !f.landed) {
+      this.gustTimer -= PHYSICS_DT;
+      if (this.gustTimer <= 0) {
+        this.gustTimer = 0.25 + Math.random() * 0.3;
+        this.gustX = (Math.random() - 0.5) * 2;
+        this.gustZ = (Math.random() - 0.5) * 2;
+        this.gustY = (Math.random() - 0.3) * 2;
+      }
+      const turb = Math.min(1, this.heat / 40) * Math.max(0, 1 - (f.y - this.world.groundHeightAt(f.x, f.z)) / 90);
+      f.applyImpulse(this.gustX * turb * 4 * PHYSICS_DT, this.gustZ * turb * 4 * PHYSICS_DT);
+      this.world.updraft = Math.min(3.5, this.heat * 0.08) * Math.max(0, 1 - (f.y - this.world.groundHeightAt(f.x, f.z)) / 90) + this.gustY * turb * 1.5;
+    } else {
+      this.world.updraft = 0;
+    }
+  }
+
+  /** Water from the bucket lands a little downwind and ahead of where it was released. */
+  private dropWater(spray: Spray): void {
+    const b = this.bucket!;
+    const fall = Math.sqrt((2 * Math.max(0, spray.y - spray.groundY)) / 9.81);
+    const w = this.world.wind;
+    const x = spray.x + (b.vx * 0.6 + (w?.x ?? 0) * 0.5) * fall;
+    const z = spray.z + (b.vz * 0.6 + (w?.z ?? 0) * 0.5) * fall;
+    const hit = this.blaze!.douse(x, z, spray.radius, spray.strength * PHYSICS_DT);
+    this.splash = { x, z, y: this.world.groundHeightAt(x, z), radius: spray.radius, height: spray.y - spray.groundY, hits: (this.splash?.hits ?? 0) + hit };
+  }
+
+  /** Advances the fire and the things that depend on it: heat, smoke and the town threat. */
+  private stepFire(dt: number): void {
+    const grid = this.blaze!;
+    const f = this.heli.flight;
+    this.fireClock += dt;
+    let stepped = false;
+    while (this.fireClock >= FIRE_STEP) {
+      this.fireClock -= FIRE_STEP;
+      const w = this.world.wind;
+      grid.step(FIRE_STEP, w?.x ?? 0, w?.z ?? 0);
+      stepped = true;
+    }
+    if (!stepped) return;
+    this.heat = f.destroyed ? 0 : grid.heatNear(f.x, f.z, HEAT_RADIUS);
+
+    // Smoke drifts downwind of the burning cells.
+    const w = this.world.wind;
+    const wl = Math.max(0.1, w?.speed ?? 0.1);
+    const ox = ((w?.x ?? 0) / wl) * 50;
+    const oz = ((w?.z ?? 0) / wl) * 50;
+    let smoke = 0;
+    for (const i of grid.burningCells()) {
+      const d = Math.hypot(grid.centreX(i) + ox - f.x, grid.centreZ(i) + oz - f.z);
+      if (d < 110) smoke += 1 - d / 110;
+    }
+    this.smokeDensity = damp(this.smokeDensity, clamp(smoke / 70, 0, 1), 1.5, FIRE_STEP * 2);
+
+    const zone = this.protectZone;
+    if (zone) {
+      const nearest = grid.nearestBurning(zone.x, zone.z);
+      this.threat = Number.isFinite(nearest) ? 1 - clamp((nearest - zone.radius) / 280, 0, 1) : 0;
+      this.frontNearest(zone);
+    }
+  }
+
+  private frontNearest(zone: { x: number; z: number }): void {
+    const grid = this.blaze!;
+    let best = Infinity;
+    for (const i of grid.burningCells()) {
+      const d = Math.hypot(grid.centreX(i) - zone.x, grid.centreZ(i) - zone.z);
+      if (d < best) {
+        best = d;
+        this.frontX = grid.centreX(i);
+        this.frontZ = grid.centreZ(i);
+      }
+    }
+  }
+
+  /** The zone the mission asks the player to protect, if any. */
+  private get protectZone() {
+    const o = this.level.mission.objectives.find((q) => q.kind === 'protect');
+    return o?.kind === 'protect' ? o : undefined;
+  }
+
+  /** The action key: drop water, or release the slung load. */
   action(): void {
+    if (this.bucket) {
+      if (this.bucket.drop()) {
+        this.sfx.play('unload');
+        this.hud.message('Dropping water', 1.2);
+      } else if (!this.bucket.dropping) {
+        this.hud.message('Bucket is empty', 1.2);
+      }
+      return;
+    }
     const e = this.cargo?.release();
     if (e) this.onCargoEvent(e);
   }
@@ -247,6 +419,7 @@ export class Session {
     this.demoAngle += dt * 0.04;
     this.visuals.setVisible(false);
     this.cargoVisuals?.setVisible(false);
+    this.bucketVisuals?.setVisible(false);
     const b = this.world.buildings;
     const cx = b.reduce((a, q) => a + q.x, 0) / Math.max(1, b.length);
     const cz = b.reduce((a, q) => a + q.z, 0) / Math.max(1, b.length);
@@ -278,6 +451,12 @@ export class Session {
       p.setScale(this.stage.pixelsPerMetre);
     }
     this.visuals.update(this.time);
+    if (this.blaze && this.fireVisuals && this.bucketVisuals && this.bucket) {
+      this.heli.visual.hook?.getWorldPosition(this.hookWorld);
+      this.bucketVisuals.update(this.bucket, this.hookWorld);
+      this.fireVisuals.update(dt, this.stage.pixelsPerMetre, this.world.wind, this.bucket, this.splash);
+      if (this.splash) this.splash.hits = 0;
+    }
     if (this.cargo && this.cargoVisuals) {
       this.heli.visual.hook?.getWorldPosition(this.hookWorld);
       this.cargoVisuals.update(this.time, this.cargo, this.runner, this.hookWorld);
@@ -310,6 +489,10 @@ export class Session {
         lost: it.lost && it.damage < 1,
         destroyed: it.damage >= 1,
       })),
+      bucket: this.bucket ? { fill: this.bucket.fill } : undefined,
+      fire: this.blaze
+        ? { burning: this.blaze.burningCount, burningIn: (x: number, z: number, r: number) => this.blaze!.burningWithin(x, z, r) }
+        : undefined,
     };
 
     // Stranded without fuel away from a service pad.
@@ -400,6 +583,15 @@ export class Session {
     if (this.gatesFlown) stats.push(['Gates', String(this.gatesFlown)]);
     if (this.level.mission.survivors) stats.push(['Rescued', `${this.runner.rescued.size} of ${this.level.mission.survivors.length}`]);
     if (this.cargo) stats.push(['Cargo damage', `${Math.round(this.cargoDamage * 100)}%`]);
+    if (this.blaze && this.bucket) {
+      stats.push(['Fire area', `${(this.blaze.burnedArea / 10000).toFixed(1)} ha`]);
+      stats.push(['Water dropped', `${this.bucket.delivered.toFixed(1)} loads`]);
+      const assets = this.level.fire?.assets ?? [];
+      if (assets.length) {
+        const saved = assets.filter((a) => this.blaze!.burnedWithin(a.x, a.z, a.radius) === 0).length;
+        stats.push(['Saved (bonus)', `${saved} of ${assets.length}`]);
+      }
+    }
     stats.push(['Landings', String(this.landings)]);
     this.outcome = {
       success,
@@ -483,13 +675,41 @@ export class Session {
       this.hud.updateAssist(WINCH_TEXT[w.hint], w.hint === 'working', w.state === 'raising' ? 1 : w.state === 'attaching' ? w.attachProgress : 0);
     } else if (this.cargo) {
       this.hud.updateAssist(...this.cargoAssist());
+    } else if (this.bucket) {
+      this.hud.updateAssist(...this.bucketAssist());
     } else {
       this.hud.updateAssist('', false, 0);
     }
     const held = this.cargo?.hooked;
     this.hud.updateLoad(held ? { mass: held.def.mass, damage: held.damage } : undefined);
+    if (this.blaze && this.bucket) {
+      this.hud.updateFire({
+        threat: this.threat,
+        areaHa: this.blaze.burningArea / 10000,
+        bucketFill: this.bucket.fill,
+        bucketText: BUCKET_TEXT[this.bucket.hint],
+      });
+      this.hud.setHaze(this.smokeDensity * 0.85);
+    }
     this.hud.setWaypoints(this.waypoints());
     this.hud.tick(dt);
+  }
+
+  /** Guidance for the water bucket. */
+  private bucketAssist(): [string, boolean, number] {
+    const b = this.bucket!;
+    switch (b.hint) {
+      case 'dipping':
+        return ['Filling bucket…', true, b.fill];
+      case 'tooFast':
+        return ['Bucket: slow down to fill', false, 0];
+      case 'full':
+        return ['Bucket full · E to drop', true, 1];
+      case 'dropping':
+        return ['Dropping water', true, b.fill];
+      default:
+        return ['', false, 0];
+    }
   }
 
   /** Guidance for the cargo hook: how to hook up, and how far off the placement is. */
@@ -554,6 +774,19 @@ export class Session {
     const f = this.heli.flight;
     if (f.fuel < 0.3) {
       for (const pad of this.world.pads.filter((p) => p.service)) out.push(this.project(pad.x, pad.top + 3, pad.z, 'Fuel', 'fuel'));
+    }
+    if (this.blaze && this.bucket) {
+      const t = this.level.terrain;
+      if (t.kind === 'forest' && this.bucket.fill < 0.2 && o && o.kind !== 'takeoff' && o.kind !== 'land') {
+        out.push(this.project(t.lake.x, this.world.seaLevel ?? 0, t.lake.z, 'Lake', 'water'));
+      }
+      const zone = this.protectZone;
+      if (o?.kind === 'protect' && zone) {
+        out.push(this.project(zone.x, this.world.groundHeightAt(zone.x, zone.z) + 6, zone.z, 'Town', 'town'));
+        if (this.blaze.burningCount > 0) {
+          out.push(this.project(this.frontX, this.world.groundHeightAt(this.frontX, this.frontZ) + 4, this.frontZ, 'Fire front', 'fire'));
+        }
+      }
     }
     if (this.cargo) {
       const placed = this.runner.placeTarget;

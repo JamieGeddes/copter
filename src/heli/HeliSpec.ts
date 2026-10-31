@@ -160,8 +160,41 @@ export const HAULER: HeliSpec = {
   maxAltitude: 150,
 };
 
+/** Fire service medium helicopter: nimble, but a full bucket takes the edge off its climb and acceleration. */
+export const BUCKETEER: HeliSpec = {
+  id: 'bucketeer',
+  name: 'Bucketeer FH-2',
+  role: 'Firefighting helicopter',
+  maxSpeed: 46,
+  acceleration: 9.5,
+  cyclicResponse: 2.8,
+  brakeAssist: 1.2,
+  cushionSink: 1.3,
+  cushionGain: 0.8,
+  windFactor: 0.9,
+  maxTilt: 0.26,
+  climbRate: 6.5,
+  collectiveResponse: 2.1,
+  yawRate: 1.7,
+  spoolRate: 0.28,
+  fuelEndurance: 600,
+  safeSinkRate: 2.5,
+  safeGroundSpeed: 3.8,
+  crashSpeed: 9,
+  mass: 2600,
+  bladeRate: 11,
+  slingLength: 12,
+  hookHeight: 0.4,
+  bodyRadius: 2.1,
+  bodyHeight: 4,
+  rotorRadius: 7.2,
+  rotorHeight: 4.5,
+  maxAltitude: 140,
+};
+
 export const AIRCRAFT: Record<string, HeliSpec> = {
   [KESTREL.id]: KESTREL,
   [ALBATROSS.id]: ALBATROSS,
   [HAULER.id]: HAULER,
+  [BUCKETEER.id]: BUCKETEER,
 };

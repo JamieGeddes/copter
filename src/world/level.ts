@@ -19,7 +19,9 @@ export type BuildingKind =
   | 'quay'
   | 'capsized'
   | 'barn'
-  | 'brokenDeck';
+  | 'brokenDeck'
+  | 'cabin'
+  | 'lookout';
 
 export interface BuildingDef {
   kind: BuildingKind;
@@ -67,6 +69,18 @@ export interface ScatterDef {
   hedges?: { spacing: number; angle: number; extent: number };
 }
 
+/** A wildfire: where it starts, and where nothing can burn. */
+export interface FireDef {
+  /** Circles that are alight when the mission starts. */
+  ignite: { x: number; z: number; radius: number }[];
+  /** Seconds the fire has already been burning when the mission starts. */
+  headStart: number;
+  /** Cleared strips where nothing burns, as polylines with a width in metres. */
+  firebreaks: { points: [number, number][]; width: number }[];
+  /** Places worth saving (bonus): lost if any cell within `radius` has burned. */
+  assets: { id: string; label: string; x: number; z: number; radius: number }[];
+}
+
 export interface LevelDef {
   id: string;
   name: string;
@@ -76,9 +90,11 @@ export interface LevelDef {
   terrain: TerrainConfig;
   /** Sea surface height, if the level has open water. */
   seaLevel?: number;
-  /** Look of the water: open sea (default) or a muddy river in flood. */
-  waterStyle?: 'sea' | 'river';
+  /** Look of the water: open sea (default) a muddy river in flood, or a still forest lake. */
+  waterStyle?: 'sea' | 'river' | 'lake';
   wind?: WindDef;
+  /** A wildfire burning on a fire grid over the terrain. */
+  fire?: FireDef;
   /** Default visible height for the camera in metres. */
   viewHeight?: number;
   bounds: Bounds;

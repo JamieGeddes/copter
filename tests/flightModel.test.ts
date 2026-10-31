@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { FlightEnvironment, FlightInput, FlightModel } from '../src/heli/FlightModel';
-import { KESTREL } from '../src/heli/HeliSpec';
+import { ALBATROSS, BUCKETEER, KESTREL } from '../src/heli/HeliSpec';
 import { Solid } from '../src/world/collision';
 
 const DT = 1 / 120;
@@ -229,5 +229,51 @@ describe('FlightModel payload and rotors', () => {
     const events = m.step(DT, IDLE, flatEnv([pole]));
     expect(m.z).toBeLessThan(0);
     void events;
+  });
+});
+
+describe('Bucketeer', () => {
+  it('sits between the Kestrel and the Albatross', () => {
+    expect(BUCKETEER.name).toBe('Bucketeer FH-2');
+    expect(BUCKETEER.mass).toBeGreaterThan(KESTREL.mass);
+    expect(BUCKETEER.mass).toBeLessThan(ALBATROSS.mass);
+    expect(BUCKETEER.maxSpeed).toBeGreaterThan(KESTREL.maxSpeed);
+    expect(BUCKETEER.maxSpeed).toBeLessThan(ALBATROSS.maxSpeed);
+    expect(BUCKETEER.acceleration).toBeLessThan(KESTREL.acceleration);
+    expect(BUCKETEER.acceleration).toBeGreaterThan(ALBATROSS.acceleration);
+    expect(BUCKETEER.slingLength).toBeGreaterThan(0);
+  });
+
+  it('slows noticeably with a full bucket of water', () => {
+    const fly = (payload: number) => {
+      const m = new FlightModel(BUCKETEER);
+      m.place(0, 0, 0);
+      m.spool = 1;
+      m.landed = false;
+      m.y = 30;
+      m.payload = payload;
+      run(m, 2, { moveX: 1, moveZ: 0, climb: 1 }, flatEnv());
+      return m;
+    };
+    const empty = fly(0);
+    const full = fly(1550);
+    expect(full.vx).toBeLessThan(empty.vx * 0.75);
+    expect(full.vy).toBeLessThan(empty.vy * 0.75);
+  });
+
+  it('is lifted by a heat updraft', () => {
+    const calm = new FlightModel(BUCKETEER);
+    calm.place(0, 0, 0);
+    calm.landed = false;
+    calm.spool = 1;
+    calm.y = 40;
+    const hot = new FlightModel(BUCKETEER);
+    hot.place(0, 0, 0);
+    hot.landed = false;
+    hot.spool = 1;
+    hot.y = 40;
+    run(calm, 2, IDLE, flatEnv());
+    run(hot, 2, IDLE, { ...flatEnv(), updraft: 4 });
+    expect(hot.y).toBeGreaterThan(calm.y + 4);
   });
 });

@@ -24,6 +24,18 @@ export const isPlaced = (c: CargoSnapshot, o: PlaceObjective): boolean => {
   return diff <= (o.headingTolerance ?? 0.26);
 };
 
+export interface BucketSnapshot {
+  /** 0..1 */
+  fill: number;
+}
+
+export interface FireSnapshot {
+  /** Cells currently burning. */
+  burning: number;
+  /** Burning cells inside a circle. */
+  burningIn(x: number, z: number, radius: number): number;
+}
+
 /** What the mission needs to know about the aircraft each tick. */
 export interface MissionSnapshot {
   x: number;
@@ -39,6 +51,8 @@ export interface MissionSnapshot {
   /** Ground height beneath the active gate, against which gate altitude is measured. */
   groundY: number;
   cargo?: CargoSnapshot[];
+  bucket?: BucketSnapshot;
+  fire?: FireSnapshot;
 }
 
 export type MissionEvent =
@@ -71,6 +85,7 @@ export class MissionRunner {
   private hoverHeld = 0;
   private gateIndex = 0;
   private unloadTimer = 0;
+  private protectHeld = 0;
 
   constructor(def: MissionDef) {
     this.def = def;
@@ -97,6 +112,8 @@ export class MissionRunner {
       }
       case 'place':
         return this.placedNow / o.cargo.length;
+      case 'protect':
+        return Math.min(1, this.protectHeld / o.seconds);
       default:
         return 0;
     }
@@ -117,6 +134,8 @@ export class MissionRunner {
         return `Aboard: ${this.onboard}`;
       case 'place':
         return o.cargo.length > 1 ? `Delivered ${this.placedNow} of ${o.cargo.length}` : '';
+      case 'protect':
+        return `Hold the line: ${Math.min(o.seconds, this.protectHeld).toFixed(0)} / ${o.seconds} s`;
       default:
         return '';
     }
@@ -171,6 +190,16 @@ export class MissionRunner {
     }
     if (this.def.timeLimit !== undefined && this.elapsed > this.def.timeLimit) return this.fail('Out of time', events);
 
+    // Fire in a zone that still has to be protected loses the mission straight away.
+    if (s.fire) {
+      for (let i = this.index; i < this.def.objectives.length; i++) {
+        const o = this.def.objectives[i];
+        if (o.kind === 'protect' && s.fire.burningIn(o.x, o.z, o.radius) > 0) {
+          return this.fail(`The fire reached ${o.label}`, events);
+        }
+      }
+    }
+
     // Allow several objectives to complete in one tick (e.g. landing completes two).
     for (let guard = 0; guard < 4 && this.objective; guard++) {
       if (!this.check(dt, s, events, this.objective)) break;
@@ -179,6 +208,7 @@ export class MissionRunner {
       this.hoverHeld = 0;
       this.gateIndex = 0;
       this.unloadTimer = 0;
+      this.protectHeld = 0;
       dt = 0;
     }
     if (!this.objective) {
@@ -217,6 +247,13 @@ export class MissionRunner {
         return o.survivors.every((id) => this.rescued.has(id));
       case 'hook':
         return !!s.cargo?.find((c) => c.id === o.cargo)?.hooked;
+      case 'fill':
+        return (s.bucket?.fill ?? 0) >= 0.99;
+      case 'protect':
+        this.protectHeld += dt;
+        return this.protectHeld >= o.seconds || (!!o.orExtinguished && !!s.fire && s.fire.burning === 0);
+      case 'extinguish':
+        return !!s.fire && s.fire.burning === 0;
       case 'place': {
         const loads = (s.cargo ?? []).filter((c) => o.cargo.includes(c.id));
         this.placedNow = loads.filter((c) => isPlaced(c, o)).length;

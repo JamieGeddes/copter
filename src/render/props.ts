@@ -154,7 +154,8 @@ const buildingParts = (b: PlacedBuilding, rng: () => number): BufferGeometry[] =
       parts.push(part(box(w * 0.94, 1.1, 0.05), 0x2a5caa, { y: top - 0.7, z: -0.17 }));
       break;
     }
-    case 'cottage': {
+    case 'cottage':
+    case 'cabin': {
       const roofH = d * 0.42;
       parts.push(part(box(w, h + SINK, d), wall, { y: (h - SINK) / 2 }));
       parts.push(part(gable(d, roofH, w), wall, { y: h }));
@@ -162,7 +163,7 @@ const buildingParts = (b: PlacedBuilding, rng: () => number): BufferGeometry[] =
       const slab = Math.hypot(roofH, d / 2) + 0.35;
       for (const side of [-1, 1]) {
         parts.push(
-          part(box(w + 0.6, 0.22, slab), 0x5d6168, {
+          part(box(w + 0.6, 0.22, slab), b.kind === 'cabin' ? 0x4a3a2c : 0x5d6168, {
             y: h + roofH / 2 + 0.1,
             z: (side * d) / 4 + side * 0.05,
             rx: side * pitch,
@@ -174,6 +175,25 @@ const buildingParts = (b: PlacedBuilding, rng: () => number): BufferGeometry[] =
       for (const wx of [-w / 3, w / 3]) {
         parts.push(part(box(1.0, 0.9, 0.1), DARK_WINDOW, { x: wx, y: h * 0.55, z: d / 2 + 0.03 }));
       }
+      break;
+    }
+    case 'lookout': {
+      // Fire lookout: four splayed legs with cross bracing, a glazed cab and a hipped roof.
+      const legH = h - 3.6;
+      for (const [lx, lz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+        parts.push(rod([lx * w * 0.5, -SINK, lz * d * 0.5], [lx * w * 0.3, legH, lz * d * 0.3], 0.18, WOOD));
+      }
+      for (const f of [0.35, 0.7]) {
+        const k = 0.5 - 0.2 * f;
+        parts.push(part(box(w * 2 * k, 0.15, 0.15), WOOD, { y: legH * f, z: d * k }));
+        parts.push(part(box(w * 2 * k, 0.15, 0.15), WOOD, { y: legH * f, z: -d * k }));
+        parts.push(part(box(0.15, 0.15, d * 2 * k), WOOD, { y: legH * f, x: w * k }));
+        parts.push(part(box(0.15, 0.15, d * 2 * k), WOOD, { y: legH * f, x: -w * k }));
+      }
+      parts.push(part(box(w * 0.8, 0.3, d * 0.8), WOOD, { y: legH }));
+      parts.push(part(box(w * 0.6, 2.2, d * 0.6), wall, { y: legH + 1.4 }));
+      parts.push(part(box(w * 0.62, 0.9, d * 0.62), DARK_WINDOW, { y: legH + 1.7 }));
+      parts.push(part(new ConeGeometry(w * 0.62, 1.2, 4), 0x7a2e22, { y: h - 0.2, ry: Math.PI / 4 }));
       break;
     }
     case 'lighthouse': {
@@ -429,6 +449,7 @@ const PALETTES = {
   desert: { boulder: 0xa65d3f, rock: 0x9a6a4c, bush: [0x8c8a4c, 0x7d7f44, 0x9a8c55] as [number, number, number] },
   coast: { boulder: 0x8c867a, rock: 0x9a958a, bush: [0x5d7a3a, 0x6b8a40, 0x8a8a3a] as [number, number, number] },
   floodplain: { boulder: 0x8c867a, rock: 0x9a958a, bush: [0x4f7232, 0x5f8238, 0x6d8a3c] as [number, number, number] },
+  forest: { boulder: 0x7d786e, rock: 0x8a857a, bush: [0x3f5f2c, 0x4b6c30, 0x5c7a36] as [number, number, number] },
 };
 
 const createScatter = (items: ScatterItem[], kind: TerrainKind): Group => {

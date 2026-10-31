@@ -20,6 +20,16 @@ export type ObjectiveDef =
   | { kind: 'rescue'; text: string; survivors: string[] }
   | { kind: 'deliver'; text: string; pad: string }
   | { kind: 'hook'; text: string; cargo: string }
+  /** Fill the water bucket. */
+  | { kind: 'fill'; text: string }
+  /**
+   * Keep every cell of a zone fire-free for `seconds`. Any fire inside the zone fails the mission,
+   * from the start of the mission until this objective completes. With `orExtinguished`, putting the
+   * whole fire out also completes it.
+   */
+  | { kind: 'protect'; text: string; label: string; x: number; z: number; radius: number; seconds: number; orExtinguished?: boolean }
+  /** Put out every burning cell. */
+  | { kind: 'extinguish'; text: string }
   | {
       kind: 'place';
       text: string;

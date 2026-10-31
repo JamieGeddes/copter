@@ -219,16 +219,19 @@ export class FireGrid {
    * Drops water on a circle. `amount` (0..1) is the water per cell at the centre and falls off
    * to the edge. Every cell it touches is wetted, so it resists ignition: each unit of water buys
    * `wetSeconds` of wetness, up to three times that.
-   * A burning cell loses intensity and goes out when that reaches zero.
+   * A burning cell loses intensity and goes out when that reaches zero. Returns how many burning
+   * cells the water landed on.
    */
-  douse(x: number, z: number, radius: number, amount: number, wetSeconds = 100): void {
+  douse(x: number, z: number, radius: number, amount: number, wetSeconds = 100): number {
     let out = false;
+    let hit = 0;
     this.forEachInCircle(x, z, radius, (i, dist) => {
       const k = amount * (1 - 0.5 * (dist / Math.max(radius, 1e-6)));
       if (k <= 0) return;
       this.wet[i] = Math.min(wetSeconds * 3, this.wet[i] + k * wetSeconds);
       this.wetCells.add(i);
       if (this.state[i] === Cell.Burning) {
+        hit++;
         this.heat[i] -= k * 2;
         if (this.heat[i] <= 0) {
           this.extinguish(i);
@@ -240,6 +243,24 @@ export class FireGrid {
       }
     });
     if (out) this.burning = this.burning.filter((i) => this.state[i] === Cell.Burning);
+    return hit;
+  }
+
+  /** Sum over burning cells within `radius` of how close each is (1 at the point, 0 at the edge). */
+  heatNear(x: number, z: number, radius: number): number {
+    let total = 0;
+    for (const i of this.burning) {
+      const d = Math.hypot(this.centreX(i) - x, this.centreZ(i) - z);
+      if (d < radius) total += (1 - d / radius) * this.heat[i];
+    }
+    return total;
+  }
+
+  /** Distance from a point to the nearest burning cell, or Infinity if nothing burns. */
+  nearestBurning(x: number, z: number): number {
+    let best = Infinity;
+    for (const i of this.burning) best = Math.min(best, Math.hypot(this.centreX(i) - x, this.centreZ(i) - z));
+    return best;
   }
 
   /** Advances the fire by `dt` seconds with the wind blowing towards (windX, windZ) in m/s. */

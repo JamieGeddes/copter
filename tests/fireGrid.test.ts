@@ -128,6 +128,17 @@ describe('FireGrid', () => {
     expect(g.state[wetCell]).not.toBe(Cell.Unburnt);
   });
 
+  it('reports how much water landed on fire, and how hot and near the fire is', () => {
+    const g = makeGrid();
+    expect(g.nearestBurning(0, 0)).toBe(Infinity);
+    g.ignite(0, 0, 8);
+    expect(g.heatNear(0, 0, 30)).toBeGreaterThan(g.heatNear(25, 0, 30));
+    expect(g.heatNear(200, 0, 30)).toBe(0);
+    expect(g.nearestBurning(40, 0)).toBeGreaterThan(20);
+    expect(g.douse(0, 0, 4, 0.1)).toBeGreaterThan(0);
+    expect(g.douse(100, 100, 4, 0.1)).toBe(0);
+  });
+
   it('reports changed cells once', () => {
     const g = makeGrid();
     g.ignite(0, 0);

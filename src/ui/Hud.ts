@@ -20,13 +20,23 @@ export interface MissionHudState {
   passengers?: { aboard: number; capacity: number };
 }
 
+export interface FireHudState {
+  /** 0..1, how close the fire is to the town. */
+  threat: number;
+  /** Ground on fire in hectares. */
+  areaHa: number;
+  /** 0..1 */
+  bucketFill: number;
+  bucketText: string;
+}
+
 export interface Waypoint {
   label: string;
   /** Screen position in CSS pixels. */
   x: number;
   y: number;
   onScreen: boolean;
-  kind: 'pad' | 'survivor' | 'gate' | 'area' | 'fuel' | 'cargo';
+  kind: 'pad' | 'survivor' | 'gate' | 'area' | 'fuel' | 'cargo' | 'water' | 'fire' | 'town';
 }
 
 const el = <K extends keyof HTMLElementTagNameMap>(tag: K, className: string, parent?: HTMLElement, text?: string) => {
@@ -42,7 +52,7 @@ const CONTROLS: [string, string][] = [
   ['Space / Q', 'Climb'],
   ['Shift / Z', 'Descend'],
   ['+ / − / wheel', 'Zoom'],
-  ['E', 'Release load'],
+  ['E', 'Release load / drop water'],
   ['L', 'Height line'],
   ['M', 'Mute'],
   ['P / Esc', 'Pause'],
@@ -62,6 +72,12 @@ export class Hud {
   private readonly loadRow: HTMLElement;
   private readonly loadMass: HTMLElement;
   private readonly loadBar: HTMLElement;
+  private readonly fireRow: HTMLElement;
+  private readonly threatBar: HTMLElement;
+  private readonly areaText: HTMLElement;
+  private readonly bucketBar: HTMLElement;
+  private readonly bucketText: HTMLElement;
+  private readonly haze: HTMLElement;
   private readonly wind: HTMLElement;
   private readonly windArrow: HTMLElement;
   private readonly windText: HTMLElement;
@@ -83,6 +99,7 @@ export class Hud {
   constructor(container: HTMLElement, aircraft: { name: string; role: string }, levelName: string) {
     this.root = el('div', 'hud', container);
     el('div', 'vignette', this.root);
+    this.haze = el('div', 'haze', this.root);
 
     const top = el('div', 'panel top-left', this.root);
     el('div', 'brand', top, 'COPTER');
@@ -121,6 +138,18 @@ export class Hud {
     this.loadBar = el('div', 'fill damage', el('div', 'bar', this.loadRow));
     this.loadMass = el('span', 'load-mass', this.loadRow);
     this.loadRow.style.display = 'none';
+    this.fireRow = el('div', 'fire-info', inst);
+    const threatRow = el('div', 'bar-row', this.fireRow);
+    el('span', 'label', threatRow, 'TOWN');
+    this.threatBar = el('div', 'fill threat', el('div', 'bar', threatRow));
+    const bucketRow = el('div', 'bar-row', this.fireRow);
+    el('span', 'label', bucketRow, 'WATER');
+    this.bucketBar = el('div', 'fill water', el('div', 'bar', bucketRow));
+    const infoRow = el('div', 'readout small', this.fireRow);
+    el('span', 'label', infoRow, 'FIRE');
+    this.areaText = el('span', 'value', infoRow);
+    this.bucketText = el('div', 'bucket-text', this.fireRow);
+    this.fireRow.style.display = 'none';
     this.wind = el('div', 'wind', inst);
     el('span', 'label', this.wind, 'WIND');
     this.windArrow = el('span', 'wind-arrow', this.wind, '↑');
@@ -204,6 +233,22 @@ export class Hud {
     if (!load) return;
     this.loadBar.style.width = `${(load.damage * 100).toFixed(1)}%`;
     this.loadMass.textContent = `${(load.mass / 1000).toFixed(1)} t`;
+  }
+
+  /** Wildfire gauges. Pass undefined on levels without a fire. */
+  updateFire(s: FireHudState | undefined): void {
+    this.fireRow.style.display = s ? 'block' : 'none';
+    if (!s) return;
+    this.threatBar.style.width = `${(s.threat * 100).toFixed(1)}%`;
+    this.threatBar.classList.toggle('high', s.threat > 0.65);
+    this.bucketBar.style.width = `${(s.bucketFill * 100).toFixed(1)}%`;
+    this.areaText.textContent = `${s.areaHa.toFixed(1)} ha`;
+    this.bucketText.textContent = s.bucketText;
+  }
+
+  /** Smoke haze over the view, 0 (clear) to 1 (thick). */
+  setHaze(level: number): void {
+    this.haze.style.opacity = Math.min(1, Math.max(0, level)).toFixed(2);
   }
 
   setWaypoints(points: Waypoint[]): void {

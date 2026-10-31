@@ -44,6 +44,8 @@ export class World {
   /** Sea surface height, if the level has water. */
   readonly seaLevel?: number;
   readonly wind?: Wind;
+  /** Rising air in m/s at the aircraft, set by the session from heat over a fire. */
+  updraft = 0;
   private readonly landables: Solid[] = [];
 
   constructor(level: LevelDef, terrain: Terrain = Terrain.generate(level.terrain)) {

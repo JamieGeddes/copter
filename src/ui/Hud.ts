@@ -1,5 +1,4 @@
 import { formatTime } from '../missions/medals';
-import { WinchHint } from '../missions/Winch';
 
 export interface HudState {
   altitude: number;
@@ -27,7 +26,7 @@ export interface Waypoint {
   x: number;
   y: number;
   onScreen: boolean;
-  kind: 'pad' | 'survivor' | 'gate' | 'area' | 'fuel';
+  kind: 'pad' | 'survivor' | 'gate' | 'area' | 'fuel' | 'cargo';
 }
 
 const el = <K extends keyof HTMLElementTagNameMap>(tag: K, className: string, parent?: HTMLElement, text?: string) => {
@@ -43,21 +42,12 @@ const CONTROLS: [string, string][] = [
   ['Space / Q', 'Climb'],
   ['Shift / Z', 'Descend'],
   ['+ / − / wheel', 'Zoom'],
+  ['E', 'Release load'],
   ['L', 'Height line'],
   ['M', 'Mute'],
   ['P / Esc', 'Pause'],
   ['H', 'Hide help'],
 ];
-
-const WINCH_TEXT: Record<WinchHint, string> = {
-  none: '',
-  tooHigh: 'Winch: descend',
-  tooLow: 'Winch: climb',
-  tooFast: 'Winch: hold steady',
-  closer: 'Winch: move closer',
-  full: 'Cabin full',
-  working: 'Winching…',
-};
 
 /** In-flight overlay: instruments, mission panel, messages and markers. */
 export class Hud {
@@ -69,6 +59,9 @@ export class Hud {
   private readonly damageBar: HTMLElement;
   private readonly status: HTMLElement;
   private readonly passengers: HTMLElement;
+  private readonly loadRow: HTMLElement;
+  private readonly loadMass: HTMLElement;
+  private readonly loadBar: HTMLElement;
   private readonly wind: HTMLElement;
   private readonly windArrow: HTMLElement;
   private readonly windText: HTMLElement;
@@ -123,6 +116,11 @@ export class Hud {
     this.fuelBar = bar('FUEL', 'fuel');
     this.damageBar = bar('DMG', 'damage');
     this.passengers = el('div', 'passengers', inst);
+    this.loadRow = el('div', 'bar-row load', inst);
+    el('span', 'label', this.loadRow, 'LOAD');
+    this.loadBar = el('div', 'fill damage', el('div', 'bar', this.loadRow));
+    this.loadMass = el('span', 'load-mass', this.loadRow);
+    this.loadRow.style.display = 'none';
     this.wind = el('div', 'wind', inst);
     el('span', 'label', this.wind, 'WIND');
     this.windArrow = el('span', 'wind-arrow', this.wind, '↑');
@@ -192,11 +190,20 @@ export class Hud {
     this.windText.textContent = `${Math.round(knots)} kt`;
   }
 
-  updateWinch(hint: WinchHint, progress: number): void {
-    this.winch.classList.toggle('show', hint !== 'none');
-    this.winch.classList.toggle('ok', hint === 'working');
-    this.winchText.textContent = WINCH_TEXT[hint];
+  /** Guidance panel for the winch or cargo hook. Empty text hides it. */
+  updateAssist(text: string, ok: boolean, progress: number): void {
+    this.winch.classList.toggle('show', text !== '');
+    this.winch.classList.toggle('ok', ok);
+    this.winchText.textContent = text;
     this.winchFill.style.width = `${(Math.min(1, progress) * 100).toFixed(0)}%`;
+  }
+
+  /** Weight and damage of the slung load; hidden when nothing is carried. */
+  updateLoad(load: { mass: number; damage: number } | undefined): void {
+    this.loadRow.style.display = load ? 'flex' : 'none';
+    if (!load) return;
+    this.loadBar.style.width = `${(load.damage * 100).toFixed(1)}%`;
+    this.loadMass.textContent = `${(load.mass / 1000).toFixed(1)} t`;
   }
 
   setWaypoints(points: Waypoint[]): void {

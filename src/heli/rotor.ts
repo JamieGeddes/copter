@@ -38,6 +38,8 @@ export interface HeliVisualParts {
   rotors: { rotor: Rotor; speed: number }[];
   /** Attachment point for the rescue winch cable, if fitted. */
   winch?: Object3D;
+  /** Belly cargo hook, if fitted. */
+  hook?: Object3D;
 }
 
 let discTexture: CanvasTexture | undefined;

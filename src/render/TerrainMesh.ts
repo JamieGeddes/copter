@@ -45,6 +45,24 @@ const SEABED_SHALLOW = new Color(0xd6c99a);
 const SEABED_MID = new Color(0x7fa89a);
 const SEABED_DEEP = new Color(0x2f5f6c);
 
+const CROPS = [0xd6c27a, 0x9ab85c, 0x7ea34c, 0xa3865a, 0xb8c578, 0xc4ad68].map((h) => new Color(h));
+const MEADOW = new Color(0x93ad60);
+const MUD = new Color(0x8a7652);
+const WET_MUD = new Color(0x6a5a3e);
+const RIVERBED = new Color(0x56492f);
+
+const floodplainColour = (c: Color, terrain: Terrain, i: number, x: number, z: number, h: number, noise: Noise2D): void => {
+  const field = terrain.dune[i];
+  c.copy(CROPS[Math.min(CROPS.length - 1, Math.floor(field * CROPS.length))]);
+  c.lerp(MEADOW, clamp(noise.fbm(x / 60, z / 60, 2) * 0.6, 0, 0.35));
+  // Hills and village greens are pasture rather than crops.
+  c.lerp(MEADOW, Math.max(smoothstep(8, 14, h), terrain.packed[i] * 0.85));
+  // Mud along the waterline, darkening below it.
+  c.lerp(MUD, 1 - smoothstep(0.4, 1.6, h));
+  c.lerp(WET_MUD, 1 - smoothstep(-0.6, 0.4, h));
+  c.lerp(RIVERBED, smoothstep(-0.8, -2.5, h));
+};
+
 const coastColour = (c: Color, terrain: Terrain, i: number, x: number, z: number, h: number, noise: Noise2D): void => {
   const slope = terrain.slopeAt(x, z);
   const n = noise.fbm(x / 80, z / 80, 3);
@@ -88,6 +106,7 @@ export const createTerrainMesh = (terrain: Terrain): Mesh => {
       positions[i * 3 + 2] = z;
 
       if (terrain.kind === 'coast') coastColour(c, terrain, i, x, z, h, noise);
+      else if (terrain.kind === 'floodplain') floodplainColour(c, terrain, i, x, z, h, noise);
       else desertColour(c, terrain, i, x, z, h, noise);
       colours[i * 3] = c.r;
       colours[i * 3 + 1] = c.g;
@@ -159,7 +178,13 @@ float vnoise(vec2 p) {
   float radius = 0.05 + hash12(cell + 1.3) * 0.08;
   float isPebble = step(0.72, hash12(cell + 17.0));
   float pebble = isPebble * smoothstep(radius, radius * 0.6, length(local - centre)) * 0.32;
-  float ripple = sin(dot(p, vec2(0.83, 0.55)) * 2.4 + vnoise(p * 0.15) * 6.0) * ${terrain.kind === 'desert' ? '0.025' : '0.0'};
+  float ripple = ${
+    terrain.kind === 'desert'
+      ? 'sin(dot(p, vec2(0.83, 0.55)) * 2.4 + vnoise(p * 0.15) * 6.0) * 0.025'
+      : terrain.kind === 'floodplain'
+        ? `sin(dot(p, vec2(${Math.cos(terrain.fieldAngle).toFixed(4)}, ${Math.sin(terrain.fieldAngle).toFixed(4)})) * 3.2) * 0.035`
+        : '0.0'
+  };
   float patches = (vnoise(p * 0.035) - 0.5) * 0.12;
   diffuseColor.rgb *= (1.0 + grain + ripple + patches) * (1.0 - pebble);
 }`,

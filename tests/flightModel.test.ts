@@ -196,3 +196,38 @@ describe('FlightModel environment', () => {
     expect(events.some((e) => e.type === 'crashed' && e.reason.includes('Ditched'))).toBe(true);
   });
 });
+
+describe('FlightModel payload and rotors', () => {
+  it('accelerates and climbs more slowly with a payload', () => {
+    const light = airborne();
+    const heavy = airborne();
+    heavy.payload = KESTREL.mass;
+    run(light, 2, { moveX: 1, moveZ: 0, climb: 1 }, flatEnv());
+    run(heavy, 2, { moveX: 1, moveZ: 0, climb: 1 }, flatEnv());
+    expect(heavy.vx).toBeLessThan(light.vx * 0.75);
+    expect(heavy.vy).toBeLessThan(light.vy * 0.75);
+  });
+
+  it('takes impulses only when airborne', () => {
+    const m = airborne();
+    m.applyImpulse(2, 0);
+    expect(m.vx).toBeCloseTo(2);
+    const g = new FlightModel(KESTREL);
+    g.place(0, 0, 0);
+    g.applyImpulse(2, 0);
+    expect(g.vx).toBe(0);
+  });
+
+  it('checks both rotor discs of a tandem helicopter', () => {
+    // A tall pole 9 m ahead of the centre: clear of a single central disc, hit by the front disc.
+    const pole: Solid = { minX: -0.5, maxX: 0.5, minZ: 9, maxZ: 10, top: 50, landable: false };
+    const tandem = { ...KESTREL, rotorDiscs: [{ offset: 5, radius: 4.4 }, { offset: -5, radius: 4.4 }] };
+    const m = new FlightModel(tandem);
+    m.place(0, 10, 0, 0);
+    m.landed = false;
+    m.spool = 1;
+    const events = m.step(DT, IDLE, flatEnv([pole]));
+    expect(m.z).toBeLessThan(0);
+    void events;
+  });
+});

@@ -25,8 +25,17 @@ export interface Water {
   update(time: number): void;
 }
 
-/** Animated sea with depth-based colour, transparency over shallows and shoreline foam. */
-export const createWater = (terrain: Terrain, seaLevel: number): Water => {
+export type WaterStyle = 'sea' | 'river';
+
+const STYLES: Record<WaterStyle, { shallow: string; mid: string; deep: string; flow: string; clarity: string }> = {
+  sea: { shallow: '0.30, 0.66, 0.66', mid: '0.10, 0.42, 0.52', deep: '0.05, 0.24, 0.36', flow: '0.0, 0.0', clarity: '9.0' },
+  // Brown flood water: opaque quickly and streaming downstream (+x).
+  river: { shallow: '0.30, 0.25, 0.14', mid: '0.21, 0.18, 0.10', deep: '0.15, 0.13, 0.07', flow: '1.6, 0.0', clarity: '2.5' },
+};
+
+/** Animated water with depth-based colour, transparency over shallows and shoreline foam. */
+export const createWater = (terrain: Terrain, seaLevel: number, style: WaterStyle = 'sea'): Water => {
+  const st = STYLES[style];
   const size = terrain.size * 3;
   const geometry = new PlaneGeometry(size, size, 300, 300);
   geometry.rotateX(-Math.PI / 2);
@@ -91,24 +100,25 @@ float wnoise(vec2 p) {
   vec2 uv = (vWorldPos.xz + uTerrainSize * 0.5) / uTerrainSize;
   float h = mix(${H_MIN.toFixed(1)}, ${H_MAX.toFixed(1)}, texture2D(uHeights, clamp(uv, 0.0, 1.0)).r);
   float depth = uSeaLevel - h;
-  vec3 shallow = vec3(0.30, 0.66, 0.66);
-  vec3 mid = vec3(0.10, 0.42, 0.52);
-  vec3 deep = vec3(0.05, 0.24, 0.36);
+  vec3 shallow = vec3(${st.shallow});
+  vec3 mid = vec3(${st.mid});
+  vec3 deep = vec3(${st.deep});
+  vec2 flow = vec2(${st.flow}) * uTime;
   vec3 col = mix(shallow, mid, smoothstep(0.5, 6.0, depth));
   col = mix(col, deep, smoothstep(6.0, 22.0, depth));
-  float n = wnoise(vWorldPos.xz * 0.08 + vec2(uTime * 0.05, uTime * 0.03));
+  float n = wnoise((vWorldPos.xz - flow) * 0.08 + vec2(uTime * 0.05, uTime * 0.03));
   col *= 0.92 + n * 0.16;
   // Foam along the shore, pulsing with the surf.
   float surf = 0.55 + 0.45 * sin(uTime * 1.6 - depth * 5.0 + n * 4.0);
   float foam = (1.0 - smoothstep(0.0, 1.4, depth + (n - 0.5) * 0.8)) * surf;
   // Small, sparse whitecap streaks drifting with the swell.
   vec2 q = mat2(0.8, -0.6, 0.6, 0.8) * vWorldPos.xz;
-  float streak = wnoise(q * vec2(0.45, 0.13) + vec2(uTime * 0.4, 0.0));
+  float streak = wnoise(q * vec2(0.45, 0.13) + vec2(uTime * 0.4, 0.0) - flow * 0.3);
   float sparse = smoothstep(0.58, 0.8, wnoise(vWorldPos.xz * 0.015 + uTime * 0.02));
   float caps = smoothstep(0.86, 0.93, streak) * sparse * smoothstep(3.0, 10.0, depth) * 0.55;
   col = mix(col, vec3(0.95, 0.97, 0.96), clamp(foam + caps, 0.0, 1.0));
   diffuseColor.rgb = col;
-  diffuseColor.a = clamp(mix(0.45, 1.0, smoothstep(0.0, 9.0, depth)) + foam * 0.5, 0.0, 1.0);
+  diffuseColor.a = clamp(mix(0.45, 1.0, smoothstep(0.0, ${st.clarity}, depth)) + foam * 0.5, 0.0, 1.0);
 }`,
       );
   };

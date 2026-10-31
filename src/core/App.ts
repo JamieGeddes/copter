@@ -128,6 +128,7 @@ export class App {
           break;
         }
         if (kb.wasPressed('help')) this.session.hud.toggleHelp();
+        if (kb.wasPressed('action')) this.session.action();
         if (kb.wasPressed('heightLine')) this.session.toggleHeightLine();
         this.session.update(dt, axesFromKeys(kb.held));
         if (this.session.outcome) {

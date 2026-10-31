@@ -39,11 +39,26 @@ export interface HeliSpec {
   safeGroundSpeed: number;
   /** Impact speed above which the aircraft is destroyed (m/s). */
   crashSpeed: number;
+  /** Empty mass in kg; payload reduces performance in proportion. */
+  mass: number;
   /** Collision radius of the fuselage and the main rotor. */
   bodyRadius: number;
   bodyHeight: number;
   rotorRadius: number;
   rotorHeight: number;
+  /**
+   * Rotor discs for collision, as offsets along the fuselage (+ forward). Defaults to a
+   * single disc of `rotorRadius` over the centre. Tandem-rotor aircraft list two.
+   */
+  rotorDiscs?: { offset: number; radius: number }[];
+  /** Blade passes per second at full rotor speed, for the rotor sound. */
+  bladeRate: number;
+  /** Two rotors produce an interleaved, beating chop. */
+  twinRotor?: boolean;
+  /** Length of the cargo sling, if the aircraft has a cargo hook. */
+  slingLength?: number;
+  /** Height of the cargo hook above the wheels or skids. */
+  hookHeight?: number;
   /** Ceiling above the ground in metres. */
   maxAltitude: number;
 }
@@ -68,6 +83,8 @@ export const KESTREL: HeliSpec = {
   safeSinkRate: 2.5,
   safeGroundSpeed: 4,
   crashSpeed: 9,
+  mass: 1100,
+  bladeRate: 10.5,
   // Collision sizes match the model drawn at 1.5x scale.
   bodyRadius: 1.9,
   bodyHeight: 3.3,
@@ -97,6 +114,8 @@ export const ALBATROSS: HeliSpec = {
   safeSinkRate: 2.5,
   safeGroundSpeed: 3.5,
   crashSpeed: 9,
+  mass: 9500,
+  bladeRate: 13,
   bodyRadius: 2.8,
   bodyHeight: 5,
   rotorRadius: 9.4,
@@ -104,7 +123,45 @@ export const ALBATROSS: HeliSpec = {
   maxAltitude: 150,
 };
 
+/** Tandem-rotor heavy lifter: slow to start and stop, rock steady in the hover. */
+export const HAULER: HeliSpec = {
+  id: 'hauler',
+  name: 'Hauler CH-4',
+  role: 'Tandem-rotor heavy-lift helicopter',
+  maxSpeed: 56,
+  acceleration: 6.5,
+  cyclicResponse: 1.8,
+  brakeAssist: 0.6,
+  cushionSink: 1.5,
+  cushionGain: 0.7,
+  windFactor: 0.6,
+  maxTilt: 0.15,
+  climbRate: 6.5,
+  collectiveResponse: 1.6,
+  yawRate: 1.0,
+  spoolRate: 0.2,
+  fuelEndurance: 1000,
+  safeSinkRate: 2.5,
+  safeGroundSpeed: 3.5,
+  crashSpeed: 9,
+  mass: 11000,
+  bladeRate: 9,
+  twinRotor: true,
+  slingLength: 14,
+  hookHeight: 0.3,
+  bodyRadius: 3,
+  bodyHeight: 5.6,
+  rotorRadius: 7.6,
+  rotorHeight: 6.6,
+  rotorDiscs: [
+    { offset: 6.2, radius: 7.6 },
+    { offset: -6.2, radius: 7.6 },
+  ],
+  maxAltitude: 150,
+};
+
 export const AIRCRAFT: Record<string, HeliSpec> = {
   [KESTREL.id]: KESTREL,
   [ALBATROSS.id]: ALBATROSS,
+  [HAULER.id]: HAULER,
 };

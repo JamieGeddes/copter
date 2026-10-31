@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { AIRCRAFT } from '../src/heli/HeliSpec';
 import { CAMPAIGN } from '../src/levels';
+import { CargoSystem } from '../src/missions/Cargo';
 import { pointInSolid } from '../src/world/collision';
 import { World } from '../src/world/World';
 
@@ -62,6 +63,29 @@ describe.each(playable.map((c) => [c.id, c.level!] as const))('level %s', (_id, 
         if (s.placement !== 'boat') expect(pointInSolid(s.x, s.z, solid)).toBe(false);
       }
       if (s.placement === 'water') expect(world.isWater(s.x, s.z)).toBe(true);
+    }
+  });
+
+  it('starts every load on dry, clear ground', () => {
+    const cargo = mission.cargo ?? [];
+    if (!cargo.length) return;
+    const sys = new CargoSystem(cargo, world, 14);
+    for (const item of sys.items) {
+      expect(sys.support(item, world).wet).toBe(false);
+      for (const s of world.solids) expect(pointInSolid(item.x, item.z, s)).toBe(false);
+    }
+  });
+
+  it('only places loads that exist, onto dry supports', () => {
+    const ids = new Set((mission.cargo ?? []).map((c) => c.id));
+    for (const o of mission.objectives) {
+      if (o.kind === 'hook') expect(ids.has(o.cargo)).toBe(true);
+      if (o.kind !== 'place') continue;
+      for (const id of o.cargo) expect(ids.has(id)).toBe(true);
+      // A load set down at the target, at the target heading, must rest on something dry.
+      const def = mission.cargo!.find((c) => c.id === o.cargo[0])!;
+      const sys = new CargoSystem([{ ...def, x: o.x, z: o.z, heading: o.heading ?? 0 }], world, 14);
+      expect(sys.support(sys.items[0], world).wet).toBe(false);
     }
   });
 

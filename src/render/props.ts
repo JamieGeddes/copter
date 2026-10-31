@@ -238,6 +238,28 @@ const buildingParts = (b: PlacedBuilding, rng: () => number): BufferGeometry[] =
       parts.push(part(box(0.18, 0.9, 0.9), 0x2c2e33, { y: sea + 1.1, z: -d / 2 + 1.2 }));
       break;
     }
+    case 'barn': {
+      const roofH = d * 0.38;
+      parts.push(part(box(w, h + SINK, d), wall, { y: (h - SINK) / 2 }));
+      parts.push(part(gable(d, roofH, w), wall, { y: h }));
+      const pitch = Math.atan2(roofH, d / 2);
+      const slab = Math.hypot(roofH, d / 2) + 0.4;
+      for (const side of [-1, 1]) {
+        parts.push(part(box(w + 0.8, 0.25, slab), 0x4a4e52, { y: h + roofH / 2 + 0.12, z: (side * d) / 4 + side * 0.05, rx: side * pitch }));
+      }
+      // Big doors on the gable end with a white cross brace.
+      parts.push(part(box(0.1, h * 0.8, d * 0.45), 0x6b3324, { x: w / 2 + 0.03, y: h * 0.4 }));
+      parts.push(part(box(0.12, 0.25, d * 0.45), 0xf1ede4, { x: w / 2 + 0.06, y: h * 0.4, rx: 0.9 }));
+      parts.push(part(box(0.12, 0.25, d * 0.45), 0xf1ede4, { x: w / 2 + 0.06, y: h * 0.4, rx: -0.9 }));
+      break;
+    }
+    case 'brokenDeck': {
+      // A collapsed bridge span: one end on its pier, the other sunk in the river.
+      const sea = -b.base;
+      parts.push(part(box(w, 0.9, d), 0x8f8a80, { y: sea + 1.2, rx: 0.22 }));
+      parts.push(part(box(w + 0.3, 0.6, 0.3), 0x6d6a66, { y: sea + 1.9, z: d / 2 - 0.4, rx: 0.22 }));
+      break;
+    }
     case 'tank': {
       parts.push(part(new CylinderGeometry(w / 2, w / 2, h + SINK, 14), wall, { y: (h - SINK) / 2 }));
       parts.push(part(new SphereGeometry(w / 2, 14, 6, 0, Math.PI * 2, 0, Math.PI / 2), shade(colour, 0.9), { y: h, sy: 0.35 }));
@@ -406,6 +428,7 @@ const pineGeometry = (): BufferGeometry =>
 const PALETTES = {
   desert: { boulder: 0xa65d3f, rock: 0x9a6a4c, bush: [0x8c8a4c, 0x7d7f44, 0x9a8c55] as [number, number, number] },
   coast: { boulder: 0x8c867a, rock: 0x9a958a, bush: [0x5d7a3a, 0x6b8a40, 0x8a8a3a] as [number, number, number] },
+  floodplain: { boulder: 0x8c867a, rock: 0x9a958a, bush: [0x4f7232, 0x5f8238, 0x6d8a3c] as [number, number, number] },
 };
 
 const createScatter = (items: ScatterItem[], kind: TerrainKind): Group => {
@@ -449,7 +472,7 @@ const createScatter = (items: ScatterItem[], kind: TerrainKind): Group => {
 const createRoads = (world: World): Mesh => {
   const positions: number[] = [];
   const colours: number[] = [];
-  const shoulder = new Color(world.terrain.kind === 'coast' ? 0x9a9478 : 0xb88c5e);
+  const shoulder = new Color(world.terrain.kind === 'desert' ? 0xb88c5e : 0x9a9478);
   const asphalt = new Color(0x75695d);
   const paint = new Color(0xe9dfc8);
   const t = world.terrain;

@@ -1,22 +1,55 @@
 import {
+  BufferGeometry,
   Color,
   DirectionalLight,
   HemisphereLight,
+  Material,
+  Mesh,
   PCFShadowMap,
   Scene,
+  Texture,
   Vector3,
   WebGLRenderer,
 } from 'three';
+import { TerrainKind } from '../world/Terrain';
 import { IsoCamera } from './IsoCamera';
+
+interface Lighting {
+  background: number;
+  sky: number;
+  ground: number;
+  hemi: number;
+  sun: number;
+  sunIntensity: number;
+}
+
+const LIGHTING: Record<TerrainKind, Lighting> = {
+  desert: { background: 0xd8b07a, sky: 0xfff8ec, ground: 0xc9a47c, hemi: 1.25, sun: 0xfff0d8, sunIntensity: 2.3 },
+  coast: { background: 0x1d4a5e, sky: 0xe6eef2, ground: 0x7d8f74, hemi: 1.15, sun: 0xfff4e4, sunIntensity: 2.1 },
+};
+
+/** Frees GPU resources held by a scene. Shared materials are left alone. */
+const disposeScene = (scene: Scene): void => {
+  const textures = new Set<Texture>();
+  scene.traverse((o) => {
+    const mesh = o as Mesh;
+    if (mesh.geometry instanceof BufferGeometry) mesh.geometry.dispose();
+    const mats = Array.isArray(mesh.material) ? mesh.material : mesh.material ? [mesh.material] : [];
+    for (const m of mats as Material[]) {
+      for (const v of Object.values(m)) if (v instanceof Texture) textures.add(v);
+    }
+  });
+  for (const t of textures) t.dispose();
+};
 
 const SHADOW_MAP = 4096;
 
 /** Renderer, scene and lighting. The sun's shadow camera follows the view. */
 export class Stage {
   readonly renderer: WebGLRenderer;
-  readonly scene = new Scene();
+  scene = new Scene();
   readonly iso = new IsoCamera();
-  readonly sun: DirectionalLight;
+  sun!: DirectionalLight;
   private readonly sunDir: Vector3;
   private readonly lightRight = new Vector3();
   private readonly lightUp = new Vector3();
@@ -29,29 +62,38 @@ export class Stage {
     this.renderer.shadowMap.type = PCFShadowMap;
     container.appendChild(this.renderer.domElement);
 
-    this.scene.background = new Color(0xd8b07a);
-
-    const hemi = new HemisphereLight(0xfff8ec, 0xc9a47c, 1.25);
-    this.scene.add(hemi);
-
-    // Late-afternoon sun from the upper right of the screen; shadows fall down-left.
     this.sunDir = new Vector3(0.25, 0.62, -0.75).normalize();
-    this.sun = new DirectionalLight(0xfff0d8, 2.3);
-    this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(SHADOW_MAP, SHADOW_MAP);
-    this.sun.shadow.camera.near = 1;
-    this.sun.shadow.camera.far = 700;
-    this.sun.shadow.bias = -0.0004;
-    this.sun.shadow.normalBias = 0.04;
-    this.sun.shadow.radius = 2;
-    this.scene.add(this.sun);
-    this.scene.add(this.sun.target);
+    this.newScene('desert');
 
     this.lightRight.crossVectors(new Vector3(0, 1, 0), this.sunDir).normalize();
     this.lightUp.crossVectors(this.sunDir, this.lightRight).normalize();
 
     this.resize();
     window.addEventListener('resize', () => this.resize());
+  }
+
+  /** Replaces the scene with an empty, lit one and frees the old scene's resources. */
+  newScene(kind: TerrainKind): Scene {
+    disposeScene(this.scene);
+    this.sun?.dispose();
+    const l = LIGHTING[kind];
+    const scene = new Scene();
+    scene.background = new Color(l.background);
+    scene.add(new HemisphereLight(l.sky, l.ground, l.hemi));
+    // Late-afternoon sun from the upper right of the screen; shadows fall down-left.
+    const sun = new DirectionalLight(l.sun, l.sunIntensity);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(SHADOW_MAP, SHADOW_MAP);
+    sun.shadow.camera.near = 1;
+    sun.shadow.camera.far = 700;
+    sun.shadow.bias = -0.0004;
+    sun.shadow.normalBias = 0.04;
+    sun.shadow.radius = 2;
+    scene.add(sun, sun.target);
+    this.scene = scene;
+    this.sun = sun;
+    this.shadowExtent = 0;
+    return scene;
   }
 
   /** Pixels per metre on screen, for sizing particles. */

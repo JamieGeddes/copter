@@ -48,6 +48,11 @@ export class IsoCamera {
     this.aspect = aspect;
   }
 
+  /** Sets the default zoom for a level. */
+  setViewHeight(h: number): void {
+    this.viewHeight = this.targetViewHeight = h;
+  }
+
   /** Multiplies the zoom level; values > 1 zoom out. */
   zoom(factor: number): void {
     this.targetViewHeight = clamp(this.targetViewHeight * factor, this.opts.minViewHeight, this.opts.maxViewHeight);

@@ -82,12 +82,28 @@ describe('FlightModel', () => {
     expect(m.damage).toBe(0);
   });
 
-  it('records a hard landing when descending fast', () => {
+  it('cushions a full-descent landing so holding the key settles gently', () => {
     const m = airborne(flatEnv(), 30);
-    const events = run(m, 8, { ...IDLE, climb: -1 }, flatEnv());
+    const events = run(m, 15, { ...IDLE, climb: -1 }, flatEnv());
+    expect(m.landed).toBe(true);
+    expect(events.some((e) => e.type === 'hardLanding')).toBe(false);
+  });
+
+  it('records a hard landing when touching down too fast', () => {
+    const m = airborne(flatEnv(), 5);
+    m.y = 0.02;
+    m.vy = -(KESTREL.safeSinkRate + 2);
+    const events = m.step(DT, IDLE, flatEnv());
     expect(events.some((e) => e.type === 'hardLanding')).toBe(true);
     expect(m.damage).toBeGreaterThan(0);
     expect(m.destroyed).toBe(false);
+  });
+
+  it('records a hard landing when sliding on at speed', () => {
+    const m = airborne(flatEnv(), 3);
+    run(m, 4, { moveX: 1, moveZ: 0, climb: 0 }, flatEnv());
+    const events = run(m, 6, { moveX: 1, moveZ: 0, climb: -1 }, flatEnv());
+    expect(events.some((e) => e.type === 'hardLanding' || e.type === 'crashed')).toBe(true);
   });
 
   it('is destroyed when it hits the ground at crash speed', () => {
@@ -152,5 +168,31 @@ describe('FlightModel', () => {
     m.service(1, 0.25, 0.1);
     expect(m.fuel).toBeCloseTo(0.75);
     expect(m.damage).toBeCloseTo(0.4);
+  });
+});
+
+describe('FlightModel environment', () => {
+  it('drifts downwind when the stick is centred', () => {
+    const env = { ...flatEnv(), wind: { x: 6, z: 0 } };
+    const m = airborne(env);
+    const x0 = m.x;
+    run(m, 10, IDLE, env);
+    expect(m.x).toBeGreaterThan(x0 + 5);
+  });
+
+  it('can hold position into the wind', () => {
+    const env = { ...flatEnv(), wind: { x: 6, z: 0 } };
+    const m = airborne(env);
+    run(m, 5, IDLE, env);
+    // A small lean into the wind cancels the drift.
+    run(m, 10, { moveX: -6 / KESTREL.maxSpeed, moveZ: 0, climb: 0 }, env);
+    expect(Math.abs(m.vx)).toBeLessThan(0.5);
+  });
+
+  it('ditches when it touches water', () => {
+    const env = { ...flatEnv(), isWater: () => true };
+    const m = airborne(env, 5);
+    const events = run(m, 15, { ...IDLE, climb: -0.3 }, env);
+    expect(events.some((e) => e.type === 'crashed' && e.reason.includes('Ditched'))).toBe(true);
   });
 });

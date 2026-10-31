@@ -13,6 +13,10 @@ export const BINDINGS = {
   help: ['KeyH'],
   mute: ['KeyM'],
   heightLine: ['KeyL'],
+  confirm: ['Enter', 'NumpadEnter'],
+  back: ['Escape', 'Backspace'],
+  restart: ['KeyR'],
+  quit: ['KeyX'],
 } as const;
 
 export type Action = keyof typeof BINDINGS;

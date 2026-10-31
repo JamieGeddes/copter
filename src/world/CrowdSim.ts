@@ -79,7 +79,7 @@ export class CrowdSim {
     for (const s of this.nearbySolids) {
       if (pointInSolid(x, z, s)) return true;
     }
-    return this.world.terrain.slopeAt(x, z) > 0.3;
+    return this.world.terrain.slopeAt(x, z) > 0.3 || this.world.isWater(x, z) || this.world.terrain.heightAt(x, z) < (this.world.seaLevel ?? -Infinity) + 0.4;
   }
 
   update(dt: number, threat?: Threat): void {

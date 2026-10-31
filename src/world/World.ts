@@ -2,6 +2,7 @@ import { createRng } from '../core/math';
 import { Bounds, pointInSolid, Solid } from './collision';
 import { BuildingDef, LevelDef, PadDef } from './level';
 import { Terrain } from './Terrain';
+import { Wind } from './Wind';
 
 export const PAD_HEIGHT = 0.3;
 
@@ -19,7 +20,7 @@ export interface PlacedPad extends PadDef {
   solid: Solid;
 }
 
-export type ScatterKind = 'cactus' | 'boulder' | 'rock' | 'bush';
+export type ScatterKind = 'cactus' | 'boulder' | 'rock' | 'bush' | 'tree';
 
 export interface ScatterItem {
   kind: ScatterKind;
@@ -40,12 +41,17 @@ export class World {
   readonly pads: PlacedPad[];
   readonly scatter: ScatterItem[];
   readonly solids: Solid[] = [];
+  /** Sea surface height, if the level has water. */
+  readonly seaLevel?: number;
+  readonly wind?: Wind;
   private readonly landables: Solid[] = [];
 
-  constructor(level: LevelDef, terrain: Terrain = Terrain.generateDesert(level.terrain)) {
+  constructor(level: LevelDef, terrain: Terrain = Terrain.generate(level.terrain)) {
     this.level = level;
     this.terrain = terrain;
     this.bounds = level.bounds;
+    this.seaLevel = level.seaLevel;
+    if (level.wind) this.wind = new Wind(level.wind, level.terrain.seed);
 
     this.buildings = level.buildings.map((b) => {
       const quarter = (b.turns ?? 0) % 2 === 1;
@@ -58,7 +64,7 @@ export class World {
         terrain.heightAt(b.x - hx, b.z + hz),
         terrain.heightAt(b.x + hx, b.z + hz),
       );
-      return { ...b, base, hx, hz };
+      return { ...b, base, hx, hz, h: b.top !== undefined ? b.top - base : b.h };
     });
 
     for (const b of this.buildings) {
@@ -86,9 +92,10 @@ export class World {
 
     this.scatter = this.placeScatter();
     for (const item of this.scatter) {
-      if (item.kind === 'cactus') {
-        const r = 0.9 * item.scale;
-        this.solids.push({ minX: item.x - r, maxX: item.x + r, minZ: item.z - r, maxZ: item.z + r, top: item.y + 5.5 * item.scale, landable: false });
+      if (item.kind === 'cactus' || item.kind === 'tree') {
+        const top = item.kind === 'tree' ? 7.5 : 5.5;
+        const r = (item.kind === 'tree' ? 1.8 : 0.9) * item.scale;
+        this.solids.push({ minX: item.x - r, maxX: item.x + r, minZ: item.z - r, maxZ: item.z + r, top: item.y + top * item.scale, landable: false });
       } else if (item.kind === 'boulder') {
         const r = 1.6 * item.scale;
         this.solids.push({ minX: item.x - r, maxX: item.x + r, minZ: item.z - r, maxZ: item.z + r, top: item.y + 2.2 * item.scale, landable: false });
@@ -96,16 +103,25 @@ export class World {
     }
   }
 
-  /** Height of whatever the aircraft would rest on: terrain, a rooftop or a pad. */
+  /** Height of whatever the aircraft would rest on: terrain, sea, a rooftop or a pad. */
   groundHeightAt(x: number, z: number): number {
     let h = this.terrain.heightAt(x, z);
+    if (this.seaLevel !== undefined && h < this.seaLevel) h = this.seaLevel;
     for (const s of this.landables) {
       if (s.top > h && pointInSolid(x, z, s)) h = s.top;
     }
     return h;
   }
 
-  /** Slope of the landing surface; rooftops and pads are flat. */
+  /** True if the point is open water (not a deck, quay or pad standing in it). */
+  isWater(x: number, z: number): boolean {
+    if (this.seaLevel === undefined) return false;
+    const terrainH = this.terrain.heightAt(x, z);
+    if (terrainH >= this.seaLevel) return false;
+    return !this.landables.some((s) => s.top > this.seaLevel! && pointInSolid(x, z, s));
+  }
+
+  /** Slope of the landing surface; rooftops, pads and water are flat. */
   slopeAt(x: number, z: number): number {
     const terrainH = this.terrain.heightAt(x, z);
     for (const s of this.landables) {
@@ -155,13 +171,15 @@ export class World {
     const rng = createRng(this.level.terrain.seed * 31 + 7);
     const out: ScatterItem[] = [];
     const extent = this.terrain.half - 20;
-    const { cacti, boulders, rocks, bushes } = this.level.scatter;
+    const { cacti = 0, boulders = 0, rocks = 0, bushes = 0, trees = 0 } = this.level.scatter;
     const plan: [ScatterKind, number, number][] = [
       ['cactus', cacti, 6],
+      ['tree', trees, 5],
       ['boulder', boulders, 4],
       ['rock', rocks, 1],
       ['bush', bushes, 1],
     ];
+    const sea = this.seaLevel;
     for (const [kind, count, margin] of plan) {
       let placed = 0;
       let attempts = 0;
@@ -172,6 +190,9 @@ export class World {
         const slope = this.terrain.slopeAt(x, z);
         if (kind === 'cactus' && (slope > 0.08 || Math.abs(x) > 470 || Math.abs(z) > 470)) continue;
         if (kind === 'bush' && slope > 0.2) continue;
+        if (kind === 'tree' && slope > 0.12) continue;
+        if (sea !== undefined && this.terrain.heightAt(x, z) < sea + (kind === 'rock' ? -0.5 : 1.5)) continue;
+        if (kind === 'tree' && this.terrain.beach[this.terrain.index(Math.round((x + this.terrain.half) / this.terrain.cellSize), Math.round((z + this.terrain.half) / this.terrain.cellSize))] > 0.2) continue;
         if (kind !== 'boulder' && kind !== 'rock' && this.riverAt(x, z) > 0.5) continue;
         if (!this.isClear(x, z, margin)) continue;
         out.push({

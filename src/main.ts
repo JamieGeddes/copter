@@ -1,5 +1,5 @@
-import { Game } from './core/Game';
+import { App } from './core/App';
 
 const container = document.getElementById('app');
 if (!container) throw new Error('Missing #app container');
-new Game(container).start();
+new App(container).start();

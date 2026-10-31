@@ -1,18 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { DESERT_LEVEL } from '../src/world/level';
+import { FLIGHT_SCHOOL as DESERT_LEVEL } from '../src/levels/flightSchool';
+import { SEA_RESCUE } from '../src/levels/seaRescue';
 import { Terrain } from '../src/world/Terrain';
 import { World } from '../src/world/World';
 
 describe('Terrain', () => {
   it('is deterministic for a seed', () => {
     const cfg = { ...DESERT_LEVEL.terrain, size: 200, flatten: [], plateaus: [] };
-    const a = Terrain.generateDesert(cfg);
-    const b = Terrain.generateDesert(cfg);
+    const a = Terrain.generate(cfg);
+    const b = Terrain.generate(cfg);
     expect(a.heights).toEqual(b.heights);
   });
 
   it('interpolates exactly through grid vertices', () => {
-    const t = Terrain.generateDesert({ ...DESERT_LEVEL.terrain, size: 200 });
+    const t = Terrain.generate({ ...DESERT_LEVEL.terrain, size: 200 });
     const ix = 10;
     const iz = 17;
     expect(t.heightAt(t.vertexX(ix), t.vertexZ(iz))).toBeCloseTo(t.heights[t.index(ix, iz)], 4);
@@ -53,5 +54,46 @@ describe('World', () => {
     const pad = world.pad(DESERT_LEVEL.spawnPad);
     expect(pad.service).toBe(true);
     expect(world.slopeAt(pad.x, pad.z)).toBe(0);
+  });
+});
+
+describe('Sea rescue level', () => {
+  const world = new World(SEA_RESCUE);
+  const survivors = SEA_RESCUE.mission.survivors!;
+
+  it('puts water survivors over open water', () => {
+    for (const s of survivors.filter((s) => s.placement === 'water')) {
+      expect(world.isWater(s.x, s.z)).toBe(true);
+      expect(world.groundHeightAt(s.x, s.z)).toBe(0);
+    }
+  });
+
+  it('puts the ledge survivor on dry rock just above the sea', () => {
+    const r = survivors.find((s) => s.placement === 'rocks')!;
+    expect(world.isWater(r.x, r.z)).toBe(false);
+    expect(world.terrain.heightAt(r.x, r.z)).toBeCloseTo(r.y, 0);
+  });
+
+  it('keeps the capsized yacht in the water', () => {
+    const y = survivors.find((s) => s.placement === 'boat')!;
+    expect(world.terrain.heightAt(y.x, y.z)).toBeLessThan(-1);
+  });
+
+  it('starts on a service pad on land and delivers to a raised hospital roof', () => {
+    const station = world.pad('station');
+    expect(station.service).toBe(true);
+    expect(world.isWater(station.x, station.z)).toBe(false);
+    expect(world.pad('hospital').top).toBeGreaterThan(20);
+  });
+
+  it('has cliffs: high ground inland and deep water offshore', () => {
+    expect(world.terrain.heightAt(-350, -350)).toBeGreaterThan(15);
+    expect(world.terrain.heightAt(300, 300)).toBeLessThan(-10);
+  });
+
+  it('keeps scenery out of the sea', () => {
+    for (const item of world.scatter.filter((s) => s.kind !== 'rock')) {
+      expect(world.isWater(item.x, item.z)).toBe(false);
+    }
   });
 });

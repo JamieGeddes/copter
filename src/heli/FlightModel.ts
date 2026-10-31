@@ -17,6 +17,10 @@ export interface FlightEnvironment {
   slopeAt(x: number, z: number): number;
   solids: readonly Solid[];
   bounds: Bounds;
+  /** True where the surface below is open water (touching it is a ditching). */
+  isWater?(x: number, z: number): boolean;
+  /** Current wind vector in m/s. */
+  wind?: { x: number; z: number };
 }
 
 export type FlightEvent =
@@ -146,17 +150,27 @@ export class FlightModel {
     this.tiltX = damp(this.tiltX, targetX, s.cyclicResponse, dt);
     this.tiltZ = damp(this.tiltZ, targetZ, s.cyclicResponse, dt);
     const authority = 0.3 + 0.7 * lift;
+    // Drag acts on airspeed, so wind pushes the aircraft unless the pilot compensates.
     const drag = s.acceleration / s.maxSpeed;
-    this.vx += (this.tiltX * s.acceleration * authority - this.vx * drag) * dt;
-    this.vz += (this.tiltZ * s.acceleration * authority - this.vz * drag) * dt;
+    const wx = (env.wind?.x ?? 0) * s.windFactor;
+    const wz = (env.wind?.z ?? 0) * s.windFactor;
+    this.vx += (this.tiltX * s.acceleration * authority - (this.vx - wx) * drag) * dt;
+    this.vz += (this.tiltZ * s.acceleration * authority - (this.vz - wz) * drag) * dt;
 
     // Collective: target vertical speed, falling when the rotor lacks power.
     const ground = env.groundHeightAt(this.x, this.z);
     let targetVy = clamp(input.climb, -1, 1) * s.climbRate;
     if (this.y - ground >= s.maxAltitude) targetVy = Math.min(targetVy, 0);
+    // Landing cushion: limit the sink rate near the ground and flare harder to meet it.
+    let response = s.collectiveResponse;
+    const cushion = -(s.cushionSink + Math.max(0, this.y - ground) * s.cushionGain);
+    if (targetVy < cushion) {
+      targetVy = cushion;
+      if (this.vy < cushion) response *= 2.5;
+    }
     const sink = -s.climbRate * 1.1;
     targetVy = targetVy * lift + sink * (1 - lift);
-    this.vy = damp(this.vy, targetVy, s.collectiveResponse, dt);
+    this.vy = damp(this.vy, targetVy, response, dt);
 
     // Integrate.
     const prevY = this.y;
@@ -170,6 +184,10 @@ export class FlightModel {
       const target = Math.atan2(this.vx, this.vz);
       const rate = s.yawRate * smoothstep(2.5, 8, speed);
       this.heading = approachAngle(this.heading, target, rate * dt);
+    } else if (env.wind && Math.hypot(env.wind.x, env.wind.z) > 1) {
+      // In a hover the aircraft weathervanes slowly to face into the wind.
+      const into = Math.atan2(-env.wind.x, -env.wind.z);
+      this.heading = approachAngle(this.heading, into, s.yawRate * 0.25 * dt);
     }
 
     this.resolveSolids(env.solids, prevY, events);
@@ -238,6 +256,10 @@ export class FlightModel {
     const slope = env.slopeAt(this.x, this.z);
     this.y = ground;
 
+    if (env.isWater?.(this.x, this.z)) {
+      this.crash('Ditched in the sea', events);
+      return;
+    }
     if (sink > this.spec.crashSpeed || slide > this.spec.crashSpeed * 1.5) {
       this.crash('Hit the ground too hard', events);
       return;

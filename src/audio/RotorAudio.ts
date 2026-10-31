@@ -74,6 +74,15 @@ export class RotorAudio {
     this.whine.start();
   }
 
+  /** Shared context and output bus for other sounds. Undefined until `start`. */
+  get context(): AudioContext | undefined {
+    return this.ctx;
+  }
+
+  get output(): GainNode | undefined {
+    return this.master;
+  }
+
   setMuted(muted: boolean): void {
     this.muted = muted;
     if (this.master && this.ctx) this.master.gain.setTargetAtTime(muted ? 0 : 0.5, this.ctx.currentTime, 0.05);

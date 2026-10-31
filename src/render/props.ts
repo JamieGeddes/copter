@@ -6,6 +6,7 @@ import {
   ConeGeometry,
   CylinderGeometry,
   DodecahedronGeometry,
+  ExtrudeGeometry,
   Float32BufferAttribute,
   Group,
   IcosahedronGeometry,
@@ -14,12 +15,14 @@ import {
   Mesh,
   MeshLambertMaterial,
   Object3D,
+  Shape,
   SphereGeometry,
   SRGBColorSpace,
 } from 'three';
 import { createRng } from '../core/math';
+import { TerrainKind } from '../world/Terrain';
 import { PlacedBuilding, PlacedPad, ScatterItem, World } from '../world/World';
-import { merge, part, propMaterial, shade, smoothPropMaterial } from './geom';
+import { merge, part, propMaterial, rod, shade, smoothPropMaterial } from './geom';
 
 const box = (w: number, h: number, d: number) => new BoxGeometry(w, h, d);
 const DARK_WINDOW = 0x3b3a40;
@@ -34,6 +37,19 @@ const parapet = (parts: BufferGeometry[], w: number, d: number, top: number, col
   parts.push(part(box(w, h, t), colour, { y: top + h / 2, z: -d / 2 + t / 2 }));
   parts.push(part(box(t, h, d - t * 2), colour, { y: top + h / 2, x: w / 2 - t / 2 }));
   parts.push(part(box(t, h, d - t * 2), colour, { y: top + h / 2, x: -w / 2 + t / 2 }));
+};
+
+/** Triangular prism for gable ends, ridge running along x. */
+const gable = (span: number, rise: number, length: number): BufferGeometry => {
+  const shape = new Shape();
+  shape.moveTo(-span / 2, 0);
+  shape.lineTo(span / 2, 0);
+  shape.lineTo(0, rise);
+  shape.closePath();
+  const g = new ExtrudeGeometry(shape, { depth: length, bevelEnabled: false });
+  g.translate(0, 0, -length / 2);
+  g.rotateY(Math.PI / 2);
+  return g;
 };
 
 const buildingParts = (b: PlacedBuilding, rng: () => number): BufferGeometry[] => {
@@ -136,6 +152,90 @@ const buildingParts = (b: PlacedBuilding, rng: () => number): BufferGeometry[] =
       parts.push(part(box(w * 0.94, 1.1, 0.05), 0xd23b2b, { y: top - 0.7, z: 0.17 }));
       parts.push(part(box(w * 0.6, 0.6, 0.05), 0x2a5caa, { y: top - 2.1, z: 0.17, x: -w * 0.15 }));
       parts.push(part(box(w * 0.94, 1.1, 0.05), 0x2a5caa, { y: top - 0.7, z: -0.17 }));
+      break;
+    }
+    case 'cottage': {
+      const roofH = d * 0.42;
+      parts.push(part(box(w, h + SINK, d), wall, { y: (h - SINK) / 2 }));
+      parts.push(part(gable(d, roofH, w), wall, { y: h }));
+      const pitch = Math.atan2(roofH, d / 2);
+      const slab = Math.hypot(roofH, d / 2) + 0.35;
+      for (const side of [-1, 1]) {
+        parts.push(
+          part(box(w + 0.6, 0.22, slab), 0x5d6168, {
+            y: h + roofH / 2 + 0.1,
+            z: (side * d) / 4 + side * 0.05,
+            rx: side * pitch,
+          }),
+        );
+      }
+      parts.push(part(box(0.8, 1.6, 0.8), 0x8a7a6a, { x: w / 2 - 1.2, y: h + roofH * 0.8, z: -d / 6 }));
+      parts.push(part(box(1.1, 2.0, 0.1), 0x3f5f7a, { y: 1, z: d / 2 + 0.03 }));
+      for (const wx of [-w / 3, w / 3]) {
+        parts.push(part(box(1.0, 0.9, 0.1), DARK_WINDOW, { x: wx, y: h * 0.55, z: d / 2 + 0.03 }));
+      }
+      break;
+    }
+    case 'lighthouse': {
+      const towerH = h - 5;
+      parts.push(part(new CylinderGeometry(2.2, 3, towerH + SINK, 16), 0xf4f2ee, { y: (towerH - SINK) / 2 }));
+      for (const f of [0.25, 0.6]) {
+        const r = 3 - (3 - 2.2) * f;
+        parts.push(part(new CylinderGeometry(r - 0.06, r + 0.04, towerH * 0.14, 16), 0xc8392b, { y: towerH * f }));
+      }
+      parts.push(part(new CylinderGeometry(3, 3, 0.4, 16), 0x3b3d42, { y: towerH + 0.2 }));
+      parts.push(part(new CylinderGeometry(1.6, 1.6, 2.6, 12), 0xffe6a0, { y: towerH + 1.7 }));
+      parts.push(part(new ConeGeometry(2, 1.8, 12), 0xc8392b, { y: towerH + 3.9 }));
+      parts.push(part(box(5, 3, 4), 0xf4f2ee, { x: 4, y: 1.5 - SINK / 2, sy: 1 }));
+      break;
+    }
+    case 'hospital': {
+      parts.push(part(box(w, h + SINK, d), wall, { y: (h - SINK) / 2 }));
+      parts.push(part(box(w - 0.6, 0.1, d - 0.6), 0xc9c6c0, { y: h + 0.05 }));
+      parapet(parts, w, d, h, wall);
+      for (const fy of [0.3, 0.68]) {
+        parts.push(part(box(w * 0.9, 1.1, 0.1), 0x4a6278, { y: h * fy, z: d / 2 + 0.03 }));
+        parts.push(part(box(0.1, 1.1, d * 0.8), 0x4a6278, { y: h * fy, x: w / 2 + 0.03 }));
+      }
+      parts.push(part(box(w + 0.1, 0.6, d + 0.1), 0x2f6fb0, { y: h - 0.9 }));
+      // Entrance canopy and sign.
+      parts.push(part(box(8, 0.4, 3), 0x2f6fb0, { y: 3.2, z: d / 2 + 1.5 }));
+      parts.push(part(box(2.6, 2.6, 0.2), 0x2f6fb0, { y: h - 3, x: w / 2 - 3, z: d / 2 + 0.1 }));
+      parts.push(part(box(0.5, 1.8, 0.1), 0xffffff, { y: h - 3, x: w / 2 - 3.6, z: d / 2 + 0.22 }));
+      parts.push(part(box(0.5, 1.8, 0.1), 0xffffff, { y: h - 3, x: w / 2 - 2.4, z: d / 2 + 0.22 }));
+      parts.push(part(box(1.2, 0.4, 0.1), 0xffffff, { y: h - 3, x: w / 2 - 3, z: d / 2 + 0.22 }));
+      break;
+    }
+    case 'station': {
+      parts.push(part(box(w, h + SINK, d), wall, { y: (h - SINK) / 2 }));
+      parts.push(part(box(w - 0.5, 0.1, d - 0.5), 0x9aa0a6, { y: h + 0.05 }));
+      parapet(parts, w, d, h, wall);
+      parts.push(part(box(w + 0.1, 0.8, d + 0.1), 0x2f4f8a, { y: h - 0.8 }));
+      parts.push(part(box(w * 0.5, 2.6, 0.1), 0x3f5f7a, { y: 1.3, z: d / 2 + 0.03, x: -w / 5 }));
+      // Lookout tower and radio mast.
+      parts.push(part(box(5, 4, 5), wall, { x: w / 2 - 3, y: h + 2, z: -d / 2 + 3 }));
+      parts.push(part(box(5.1, 1.2, 5.1), 0x3b4a5a, { x: w / 2 - 3, y: h + 2.8, z: -d / 2 + 3 }));
+      parts.push(rod([w / 2 - 3, h + 4, -d / 2 + 3], [w / 2 - 3, h + 12, -d / 2 + 3], 0.08, 0xdedad2));
+      break;
+    }
+    case 'quay': {
+      parts.push(part(box(w, h + SINK, d), wall, { y: (h - SINK) / 2 }));
+      parts.push(part(box(w, 0.15, d), shade(colour, 1.1), { y: h + 0.07 }));
+      for (let x = -w / 2 + 2; x < w / 2; x += 6) {
+        for (const side of [-1, 1]) {
+          parts.push(part(new CylinderGeometry(0.22, 0.26, 0.6, 7), 0x3b3d42, { x, y: h + 0.3, z: side * (d / 2 - 0.5) }));
+        }
+      }
+      break;
+    }
+    case 'capsized': {
+      const sea = -b.base;
+      parts.push(
+        part(new SphereGeometry(1, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2), 0xb33b2c, { y: sea - 0.15, sx: w / 2, sy: 1.25, sz: d / 2 }),
+      );
+      parts.push(part(box(w * 0.98, 0.25, d * 0.9), 0xf4f2ee, { y: sea + 0.05 }));
+      parts.push(part(box(0.3, 1.6, 2.6), 0x2c2e33, { y: sea + 1.6 }));
+      parts.push(part(box(0.18, 0.9, 0.9), 0x2c2e33, { y: sea + 1.1, z: -d / 2 + 1.2 }));
       break;
     }
     case 'tank': {
@@ -272,22 +372,44 @@ const jitter = (g: BufferGeometry, amount: number, seed: number): BufferGeometry
   return g;
 };
 
-const boulderGeometry = (): BufferGeometry =>
-  jitter(part(new DodecahedronGeometry(1.3, 0), 0xa65d3f, { y: 0.7, sx: 1.3, sy: 0.9, sz: 1.1 }), 0.5, 3);
+const boulderGeometry = (colour: number): BufferGeometry =>
+  jitter(part(new DodecahedronGeometry(1.3, 0), colour, { y: 0.7, sx: 1.3, sy: 0.9, sz: 1.1 }), 0.5, 3);
 
-const rockGeometry = (): BufferGeometry =>
-  jitter(part(new IcosahedronGeometry(0.45, 0), 0x9a6a4c, { y: 0.15, sy: 0.6 }), 0.2, 9);
+const rockGeometry = (colour: number): BufferGeometry =>
+  jitter(part(new IcosahedronGeometry(0.45, 0), colour, { y: 0.15, sy: 0.6 }), 0.2, 9);
 
-const bushGeometry = (): BufferGeometry => {
+const bushGeometry = (c: [number, number, number]): BufferGeometry => {
   const parts = [
-    part(new IcosahedronGeometry(0.7, 0), 0x8c8a4c, { y: 0.35, sy: 0.6 }),
-    part(new IcosahedronGeometry(0.5, 0), 0x7d7f44, { x: 0.55, y: 0.3, z: 0.2, sy: 0.6 }),
-    part(new IcosahedronGeometry(0.45, 0), 0x9a8c55, { x: -0.4, y: 0.25, z: -0.35, sy: 0.6 }),
+    part(new IcosahedronGeometry(0.7, 0), c[0], { y: 0.35, sy: 0.6 }),
+    part(new IcosahedronGeometry(0.5, 0), c[1], { x: 0.55, y: 0.3, z: 0.2, sy: 0.6 }),
+    part(new IcosahedronGeometry(0.45, 0), c[2], { x: -0.4, y: 0.25, z: -0.35, sy: 0.6 }),
   ];
   return merge(parts);
 };
 
-const createScatter = (items: ScatterItem[]): Group => {
+const roundTreeGeometry = (): BufferGeometry =>
+  merge([
+    part(new CylinderGeometry(0.22, 0.3, 3, 6), 0x6b4a32, { y: 1.5 }),
+    part(new IcosahedronGeometry(2.1, 0), 0x5f8a3e, { y: 4.4, sy: 0.85 }),
+    part(new IcosahedronGeometry(1.5, 0), 0x6f9a48, { x: 1.1, y: 5.3, z: 0.4 }),
+    part(new IcosahedronGeometry(1.3, 0), 0x557f38, { x: -0.9, y: 5, z: -0.6 }),
+  ]);
+
+const pineGeometry = (): BufferGeometry =>
+  merge([
+    part(new CylinderGeometry(0.2, 0.28, 2.4, 6), 0x5e4330, { y: 1.2 }),
+    part(new ConeGeometry(2.2, 3.4, 7), 0x3f6b3a, { y: 3.6 }),
+    part(new ConeGeometry(1.7, 2.8, 7), 0x467542, { y: 5.2 }),
+    part(new ConeGeometry(1.1, 2.2, 7), 0x4d7d48, { y: 6.6 }),
+  ]);
+
+const PALETTES = {
+  desert: { boulder: 0xa65d3f, rock: 0x9a6a4c, bush: [0x8c8a4c, 0x7d7f44, 0x9a8c55] as [number, number, number] },
+  coast: { boulder: 0x8c867a, rock: 0x9a958a, bush: [0x5d7a3a, 0x6b8a40, 0x8a8a3a] as [number, number, number] },
+};
+
+const createScatter = (items: ScatterItem[], kind: TerrainKind): Group => {
+  const palette = PALETTES[kind];
   const group = new Group();
   const rng = createRng(5);
   const dummy = new Object3D();
@@ -295,9 +417,11 @@ const createScatter = (items: ScatterItem[]): Group => {
   const kinds: { key: string; filter: (s: ScatterItem) => boolean; geometry: BufferGeometry; shadow: boolean; smooth: boolean }[] = [
     { key: 'cactus2', filter: (s) => s.kind === 'cactus' && s.variant < 2, geometry: cactusGeometry(2), shadow: true, smooth: false },
     { key: 'cactus1', filter: (s) => s.kind === 'cactus' && s.variant >= 2, geometry: cactusGeometry(1), shadow: true, smooth: false },
-    { key: 'boulder', filter: (s) => s.kind === 'boulder', geometry: boulderGeometry(), shadow: true, smooth: false },
-    { key: 'rock', filter: (s) => s.kind === 'rock', geometry: rockGeometry(), shadow: false, smooth: false },
-    { key: 'bush', filter: (s) => s.kind === 'bush', geometry: bushGeometry(), shadow: true, smooth: false },
+    { key: 'treeRound', filter: (s) => s.kind === 'tree' && s.variant < 2, geometry: roundTreeGeometry(), shadow: true, smooth: false },
+    { key: 'treePine', filter: (s) => s.kind === 'tree' && s.variant >= 2, geometry: pineGeometry(), shadow: true, smooth: false },
+    { key: 'boulder', filter: (s) => s.kind === 'boulder', geometry: boulderGeometry(palette.boulder), shadow: true, smooth: false },
+    { key: 'rock', filter: (s) => s.kind === 'rock', geometry: rockGeometry(palette.rock), shadow: false, smooth: false },
+    { key: 'bush', filter: (s) => s.kind === 'bush', geometry: bushGeometry(palette.bush), shadow: true, smooth: false },
   ];
   for (const k of kinds) {
     const list = items.filter(k.filter);
@@ -325,7 +449,7 @@ const createScatter = (items: ScatterItem[]): Group => {
 const createRoads = (world: World): Mesh => {
   const positions: number[] = [];
   const colours: number[] = [];
-  const shoulder = new Color(0xb88c5e);
+  const shoulder = new Color(world.terrain.kind === 'coast' ? 0x9a9478 : 0xb88c5e);
   const asphalt = new Color(0x75695d);
   const paint = new Color(0xe9dfc8);
   const t = world.terrain;
@@ -380,7 +504,7 @@ export const createProps = (world: World): Group => {
   const group = new Group();
   group.add(createBuildings(world));
   group.add(createPads(world));
-  group.add(createScatter(world.scatter));
+  group.add(createScatter(world.scatter, world.terrain.kind));
   group.add(createRoads(world));
   for (const p of world.pads.filter((pad) => pad.service).slice(0, 1)) group.add(createWindsock(p));
   return group;

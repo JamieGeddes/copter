@@ -34,11 +34,11 @@ export interface FireTuning {
 }
 
 export const DEFAULT_TUNING: FireTuning = {
-  spread: 0.3,
+  spread: 0.07,
   windGain: 0.14,
   slopeGain: 2.5,
   burnSeconds: 40,
-  cooling: 0.25,
+  cooling: 0.05,
   recovery: 0.04,
 };
 
@@ -217,15 +217,16 @@ export class FireGrid {
 
   /**
    * Drops water on a circle. `amount` (0..1) is the water per cell at the centre and falls off
-   * to the edge. Every cell it touches is wetted, so it resists ignition for `wetSeconds`.
+   * to the edge. Every cell it touches is wetted, so it resists ignition: each unit of water buys
+   * `wetSeconds` of wetness, up to three times that.
    * A burning cell loses intensity and goes out when that reaches zero.
    */
-  douse(x: number, z: number, radius: number, amount: number, wetSeconds = 60): void {
+  douse(x: number, z: number, radius: number, amount: number, wetSeconds = 100): void {
     let out = false;
     this.forEachInCircle(x, z, radius, (i, dist) => {
       const k = amount * (1 - 0.5 * (dist / Math.max(radius, 1e-6)));
       if (k <= 0) return;
-      this.wet[i] = Math.max(this.wet[i], wetSeconds * Math.min(1, k * 2));
+      this.wet[i] = Math.min(wetSeconds * 3, this.wet[i] + k * wetSeconds);
       this.wetCells.add(i);
       if (this.state[i] === Cell.Burning) {
         this.heat[i] -= k * 2;

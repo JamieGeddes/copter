@@ -155,6 +155,11 @@ export class Terrain {
     this.beach = new Float32Array(n);
   }
 
+  /** Vertex index along one axis nearest a world coordinate (may fall outside the grid). */
+  cellIndex(v: number): number {
+    return Math.round((v + this.half) / this.cellSize);
+  }
+
   /** Woodland density (0 bare, 1 dense) at the vertex nearest a position; forests only. */
   canopyAt(x: number, z: number): number {
     const ix = clamp(Math.round((x + this.half) / this.cellSize), 0, this.cells);

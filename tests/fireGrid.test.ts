@@ -44,10 +44,11 @@ describe('FireGrid', () => {
 
   it('spreads outward from an ignition point', () => {
     const g = makeGrid();
-    g.ignite(0, 0);
-    run(g, 30);
-    expect(g.burningCount).toBeGreaterThan(8);
-    expect(reach(g, 1, 0)).toBeGreaterThan(CELL * 2);
+    g.ignite(0, 0, 5);
+    const start = g.burningCount;
+    run(g, 40);
+    expect(g.burningCount).toBeGreaterThan(start);
+    expect(reach(g, 1, 0)).toBeGreaterThan(CELL * 3);
   });
 
   it('spreads faster downwind than upwind', () => {

@@ -55,7 +55,7 @@ const COUPLING = 0.6;
 export const sprayRadius = (height: number): number => clamp(4 + 0.25 * height, 4, 14);
 
 /** Water strength per cell per second; the same load spread over a wider circle is thinner. */
-export const sprayStrength = (radius: number): number => 1.1 * Math.min(1, (5 / radius) ** 2);
+export const sprayStrength = (radius: number): number => 1.4 * Math.min(1, (5 / radius) ** 2);
 
 /**
  * Water bucket on a long line. A point mass on a rope from the cargo hook, filled by dipping it

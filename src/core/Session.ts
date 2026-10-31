@@ -124,7 +124,7 @@ export class Session {
     }
     this.visuals = new MissionVisuals(scene, this.world, this.runner, this.heli.visual, this.winch);
 
-    const dustColour = { desert: 0xd9ad74, coast: 0xb8ab88, floodplain: 0xa89a74 }[level.terrain.kind];
+    const dustColour = { desert: 0xd9ad74, coast: 0xb8ab88, floodplain: 0xa89a74, forest: 0x9a8f6a }[level.terrain.kind];
     this.dust = new Particles({ capacity: 900, colour: dustColour, opacity: 0.55, drag: 1.6, gravity: 0.4 });
     this.spray = new Particles({ capacity: 900, colour: 0xe4eef0, opacity: 0.32, drag: 1.8, gravity: -1.5 });
     this.smoke = new Particles({ capacity: 500, colour: 0x3a342f, opacity: 0.6, drag: 0.6, gravity: 2.2 });

@@ -27,6 +27,7 @@ const LIGHTING: Record<TerrainKind, Lighting> = {
   desert: { background: 0xd8b07a, sky: 0xfff8ec, ground: 0xc9a47c, hemi: 1.25, sun: 0xfff0d8, sunIntensity: 2.3 },
   coast: { background: 0x1d4a5e, sky: 0xe6eef2, ground: 0x7d8f74, hemi: 1.15, sun: 0xfff4e4, sunIntensity: 2.1 },
   floodplain: { background: 0x7a8a5c, sky: 0xeef2ee, ground: 0x8a9a6a, hemi: 1.2, sun: 0xfff2dc, sunIntensity: 2.2 },
+  forest: { background: 0x4f6a3c, sky: 0xeaf0e4, ground: 0x6f7f4c, hemi: 1.1, sun: 0xffe8c4, sunIntensity: 2.0 },
 };
 
 /** Frees GPU resources held by a scene. Shared materials are left alone. */

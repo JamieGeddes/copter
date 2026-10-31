@@ -180,6 +180,7 @@ export class World {
       ['bush', bushes, 1],
     ];
     const sea = this.seaLevel;
+    const forest = this.terrain.kind === 'forest';
     for (const [kind, count, margin] of plan) {
       let placed = 0;
       let attempts = 0;
@@ -190,7 +191,9 @@ export class World {
         const slope = this.terrain.slopeAt(x, z);
         if (kind === 'cactus' && (slope > 0.08 || Math.abs(x) > 470 || Math.abs(z) > 470)) continue;
         if (kind === 'bush' && slope > 0.2) continue;
-        if (kind === 'tree' && slope > 0.12) continue;
+        if (kind === 'tree' && slope > (forest ? 0.3 : 0.12)) continue;
+        // Forests plant trees where the woodland is dense and leave meadows open.
+        if (forest && (kind === 'tree' || kind === 'bush') && rng() > this.terrain.canopyAt(x, z) * (kind === 'tree' ? 1.15 : 0.6) - (kind === 'tree' ? 0.05 : -0.1)) continue;
         if (sea !== undefined && this.terrain.heightAt(x, z) < sea + (kind === 'rock' ? -0.5 : 1.5)) continue;
         if (kind === 'tree' && this.terrain.beach[this.terrain.index(Math.round((x + this.terrain.half) / this.terrain.cellSize), Math.round((z + this.terrain.half) / this.terrain.cellSize))] > 0.2) continue;
         if (kind !== 'boulder' && kind !== 'rock' && this.riverAt(x, z) > 0.5) continue;

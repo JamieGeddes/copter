@@ -77,7 +77,26 @@ export interface FloodplainConfig extends BaseTerrainConfig {
   fieldAngle: number;
 }
 
-export type TerrainConfig = DesertConfig | CoastConfig | FloodplainConfig;
+/** A lake, carved to `depth` metres below the water surface at its centre. */
+export interface Lake {
+  x: number;
+  z: number;
+  radius: number;
+  depth: number;
+}
+
+/**
+ * Rolling wooded hills with a lake and a river running from the lake's side of the map. Woodland
+ * density is stored per vertex in `dune` (0 bare, 1 dense), and water in `river`.
+ */
+export interface ForestConfig extends BaseTerrainConfig {
+  kind: 'forest';
+  lake: Lake;
+  /** Stream between `xMin` and `xMax` only, so it does not wall the map in. */
+  river: Riverbed & { xMin: number; xMax: number };
+}
+
+export type TerrainConfig = DesertConfig | CoastConfig | FloodplainConfig | ForestConfig;
 
 /** Centre line of a floodplain river (z for a given x). */
 export const floodRiverZ = (r: FloodRiver, x: number): number =>
@@ -111,7 +130,7 @@ export class Terrain {
   /** Vertices along each side (cells + 1). */
   readonly verts: number;
   readonly heights: Float32Array;
-  /** 0..1 dune crest value per vertex, used for colouring. */
+  /** 0..1 dune crest value per vertex, used for colouring (woodland density in forests). */
   readonly dune: Float32Array;
   /** 0..1 riverbed mask per vertex. */
   readonly river: Float32Array;
@@ -134,6 +153,13 @@ export class Terrain {
     this.river = new Float32Array(n);
     this.packed = new Float32Array(n);
     this.beach = new Float32Array(n);
+  }
+
+  /** Woodland density (0 bare, 1 dense) at the vertex nearest a position; forests only. */
+  canopyAt(x: number, z: number): number {
+    const ix = clamp(Math.round((x + this.half) / this.cellSize), 0, this.cells);
+    const iz = clamp(Math.round((z + this.half) / this.cellSize), 0, this.cells);
+    return this.kind === 'forest' ? this.dune[this.index(ix, iz)] : 0;
   }
 
   get half(): number {
@@ -182,6 +208,7 @@ export class Terrain {
   static generate(cfg: TerrainConfig): Terrain {
     if (cfg.kind === 'coast') return Terrain.generateCoast(cfg);
     if (cfg.kind === 'floodplain') return Terrain.generateFloodplain(cfg);
+    if (cfg.kind === 'forest') return Terrain.generateForest(cfg);
     return Terrain.generateDesert(cfg);
   }
 
@@ -283,6 +310,37 @@ export class Terrain {
     const t = Terrain.build(cfg, natural, noise, 'floodplain');
     t.fieldAngle = cfg.fieldAngle;
     return t;
+  }
+
+  /** Builds wooded hills with a lake, a stream and woodland density that thins towards the ridges. */
+  static generateForest(cfg: ForestConfig): Terrain {
+    const noise = new Noise2D(cfg.seed);
+    const natural = (x: number, z: number) => {
+      let h = 9 + noise.fbm(x / 300 + 3, z / 300, 4) * 17 + noise.fbm(x / 70, z / 70, 3) * 3 + noise.fbm(x / 18, z / 18, 2) * 0.4;
+      h = Math.max(h, 3.2 + noise.fbm(x / 40, z / 40, 2) * 0.5);
+      // Higher ridges frame the playable area.
+      const edgeDist = Math.max(Math.abs(x), Math.abs(z));
+      const edge = smoothstep(cfg.edgeStart, cfg.edgeStart + 130, edgeDist + noise.fbm(x / 60, z / 60, 3) * 30);
+      h = Math.max(h, edge * (34 + noise.fbm(x / 90, z / 90, 3) * 10));
+
+      const l = cfg.lake;
+      const lakeD = Math.hypot(x - l.x, z - l.z) + noise.fbm(x / 45 + 8, z / 45, 2) * l.radius * 0.25;
+      const lake = smoothstep(l.radius + 18, l.radius - 6, lakeD);
+      h = lerp(h, -l.depth, lake);
+
+      const r = cfg.river;
+      const centre = r.offset + r.amplitude * Math.sin(x / r.wavelength) + noise.noise(x / 80, 5.1) * 8;
+      const reach = smoothstep(r.xMin - 30, r.xMin, x) * smoothstep(r.xMax + 30, r.xMax, x);
+      const stream = smoothstep(r.width + 7, r.width, Math.abs(z - centre)) * reach;
+      h = lerp(h, -r.depth, stream);
+
+      const water = Math.max(lake, stream);
+      const woods = smoothstep(-0.3, 0.2, noise.fbm(x / 140 + 40, z / 140 - 12, 3));
+      const treeLine = 1 - smoothstep(30, 40, h);
+      const canopy = clamp(woods * treeLine * (1 - smoothstep(0.1, 0.5, water)) * (0.75 + noise.fbm(x / 30, z / 30, 2) * 0.6), 0, 1);
+      return { h, dune: canopy, river: water, beach: 0 };
+    };
+    return Terrain.build(cfg, natural, noise, 'forest');
   }
 
   private static build(

@@ -76,8 +76,8 @@ export interface LevelDef {
   terrain: TerrainConfig;
   /** Sea surface height, if the level has open water. */
   seaLevel?: number;
-  /** Look of the water: open sea (default) or a muddy river in flood. */
-  waterStyle?: 'sea' | 'river';
+  /** Look of the water: open sea (default) a muddy river in flood, or a still forest lake. */
+  waterStyle?: 'sea' | 'river' | 'lake';
   wind?: WindDef;
   /** Default visible height for the camera in metres. */
   viewHeight?: number;

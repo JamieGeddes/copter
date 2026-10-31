@@ -429,6 +429,7 @@ const PALETTES = {
   desert: { boulder: 0xa65d3f, rock: 0x9a6a4c, bush: [0x8c8a4c, 0x7d7f44, 0x9a8c55] as [number, number, number] },
   coast: { boulder: 0x8c867a, rock: 0x9a958a, bush: [0x5d7a3a, 0x6b8a40, 0x8a8a3a] as [number, number, number] },
   floodplain: { boulder: 0x8c867a, rock: 0x9a958a, bush: [0x4f7232, 0x5f8238, 0x6d8a3c] as [number, number, number] },
+  forest: { boulder: 0x7d786e, rock: 0x8a857a, bush: [0x3f5f2c, 0x4b6c30, 0x5c7a36] as [number, number, number] },
 };
 
 const createScatter = (items: ScatterItem[], kind: TerrainKind): Group => {

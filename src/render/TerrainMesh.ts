@@ -86,6 +86,35 @@ const coastColour = (c: Color, terrain: Terrain, i: number, x: number, z: number
   }
 };
 
+const FOREST_FLOOR = new Color(0x4e6a34);
+const FOREST_DARK = new Color(0x34502a);
+const MEADOW_FOREST = new Color(0x8aa05a);
+const MEADOW_DRY = new Color(0xb0ab68);
+const LITTER = new Color(0x6a5a38);
+const SHORE = new Color(0x9a8d66);
+const LAKEBED = new Color(0x4d5c46);
+const FOREST_ROCK = [new Color(0x857f74), new Color(0x9a9386), new Color(0x6f695f)];
+const PACKED_FOREST = new Color(0x9a8c68);
+
+const forestColour = (c: Color, terrain: Terrain, i: number, x: number, z: number, h: number, noise: Noise2D): void => {
+  const slope = terrain.slopeAt(x, z);
+  const canopy = terrain.dune[i];
+  const n = noise.fbm(x / 70, z / 70, 3);
+  // Open ground is meadow, patched with dry grass; under trees it is dark needle litter.
+  c.copy(MEADOW_FOREST).lerp(MEADOW_DRY, clamp(noise.fbm(x / 120 + 9, z / 120, 2) * 1.4, 0, 1) * 0.6);
+  c.lerp(FOREST_FLOOR, smoothstep(0.05, 0.6, canopy) * 0.9);
+  c.lerp(FOREST_DARK, clamp(n + 0.2, 0, 1) * smoothstep(0.4, 1, canopy) * 0.6);
+  c.lerp(LITTER, clamp(noise.fbm(x / 22, z / 22, 2) * 0.8, 0, 1) * 0.25 * canopy);
+  c.lerp(PACKED_FOREST, terrain.packed[i] * 0.6);
+  const rockMix = smoothstep(0.2, 0.42, slope);
+  if (rockMix > 0) {
+    const band = Math.floor(h / 3 + noise.noise(x / 40, z / 40) * 1.2);
+    c.lerp(FOREST_ROCK[((band % FOREST_ROCK.length) + FOREST_ROCK.length) % FOREST_ROCK.length], rockMix);
+  }
+  // Muddy shore, and a dark bed under the water.
+  c.lerp(SHORE, (1 - smoothstep(0.3, 1.6, h)) * 0.9);
+  c.lerp(LAKEBED, smoothstep(-0.2, -2.5, h));
+};
 
 /** Builds the terrain mesh with vertex colours and a world-space grain shader. */
 export const createTerrainMesh = (terrain: Terrain): Mesh => {
@@ -107,6 +136,7 @@ export const createTerrainMesh = (terrain: Terrain): Mesh => {
 
       if (terrain.kind === 'coast') coastColour(c, terrain, i, x, z, h, noise);
       else if (terrain.kind === 'floodplain') floodplainColour(c, terrain, i, x, z, h, noise);
+      else if (terrain.kind === 'forest') forestColour(c, terrain, i, x, z, h, noise);
       else desertColour(c, terrain, i, x, z, h, noise);
       colours[i * 3] = c.r;
       colours[i * 3 + 1] = c.g;

@@ -20,11 +20,13 @@ import {
   Vector3,
 } from 'three';
 import { HeliVisualParts } from '../heli/rotor';
+import { Boarding } from '../missions/Boarding';
 import { MissionRunner } from '../missions/MissionRunner';
 import { SurvivorDef } from '../missions/types';
 import { Winch } from '../missions/Winch';
 import { waveHeight } from '../world/waves';
 import { World } from '../world/World';
+import { addCloud } from './cloud';
 import { merge, part } from './geom';
 
 const AMBER = 0xffc04a;
@@ -59,6 +61,7 @@ export class MissionVisuals {
   private readonly world: World;
   private readonly runner: MissionRunner;
   private readonly winch?: Winch;
+  private readonly boarding?: Boarding;
   private readonly heli: HeliVisualParts;
   private readonly gates: GateVisual[] = [];
   private readonly survivors: SurvivorVisual[] = [];
@@ -72,11 +75,13 @@ export class MissionVisuals {
   private readonly anchor = new Vector3();
   private readonly personMaterial = new MeshLambertMaterial({ vertexColors: true, flatShading: true });
 
-  constructor(scene: Scene, world: World, runner: MissionRunner, heli: HeliVisualParts, winch?: Winch) {
+  constructor(scene: Scene, world: World, runner: MissionRunner, heli: HeliVisualParts, winch?: Winch, boarding?: Boarding) {
     this.world = world;
     this.runner = runner;
     this.heli = heli;
     this.winch = winch;
+    this.boarding = boarding;
+    addCloud(this.personMaterial);
     scene.add(this.root);
 
     for (const o of runner.def.objectives) {
@@ -252,6 +257,18 @@ export class MissionVisuals {
       }
       if (rescued) continue;
       const t = time + s.def.x * 0.13;
+      if (this.boarding?.walkingId === s.def.id) {
+        // Walking over to the aircraft, ducking under the rotor.
+        const k = Math.min(1, this.boarding.progress);
+        const x = s.def.x + (this.heli.root.position.x - s.def.x) * k;
+        const z = s.def.z + (this.heli.root.position.z - s.def.z) * k;
+        s.group.position.set(x, this.world.groundHeightAt(x, z), z);
+        s.group.rotation.set(0.25 * k, Math.atan2(this.heli.root.position.x - s.def.x, this.heli.root.position.z - s.def.z), 0);
+        s.arm.rotation.z = 0.2;
+        continue;
+      }
+      s.group.position.set(s.def.x, s.def.y, s.def.z);
+      s.group.rotation.set(0, 0, 0);
       if (s.def.placement === 'water') {
         // Only head and shoulders above the surface.
         const y = s.def.y + waveHeight(s.def.x, s.def.z, time) - 1.25;
@@ -265,14 +282,21 @@ export class MissionVisuals {
       s.arm.rotation.z = Math.PI * 0.85 + Math.sin(t * 6) * 0.45;
     }
 
-    // Target ring: green when the winch can work, amber otherwise.
+    // Target ring: green when the winch can work, amber otherwise. Landing pickups show the
+    // area to land in.
     const nearest = this.survivors.find((s) => s.def.id === (winch?.targetId ?? winch?.nearestId));
-    this.targetRing.visible = !!nearest && !!winch && winch.hint !== 'none';
-    if (nearest && winch) {
+    const walker = this.boarding;
+    const landing = walker && walker.hint !== 'none' ? this.survivors.find((s) => s.def.id === walker.nearestId) : undefined;
+    this.targetRing.visible = (!!nearest && !!winch && winch.hint !== 'none') || !!landing;
+    if (nearest && winch && winch.hint !== 'none') {
       const ok = winch.hint === 'working';
       this.targetMaterial.color.set(ok ? GREEN : AMBER);
       this.targetRing.position.set(nearest.def.x, nearest.def.y + 0.15, nearest.def.z);
       this.targetRing.scale.setScalar(winch.config.radius);
+    } else if (landing && walker) {
+      this.targetMaterial.color.set(walker.hint === 'boarding' ? GREEN : AMBER);
+      this.targetRing.position.set(landing.def.x, landing.def.y + 0.15, landing.def.z);
+      this.targetRing.scale.setScalar(walker.config.radius);
     }
 
     // Cable and winchman.

@@ -21,8 +21,10 @@ export interface FlightEnvironment {
   isWater?(x: number, z: number): boolean;
   /** Current wind vector in m/s. */
   wind?: { x: number; z: number };
-  /** Rising air in m/s, such as the heat updraft over a fire. */
+  /** Rising air in m/s, such as the heat updraft over a fire or wind up a slope. */
   updraft?: number;
+  /** Rotor blades strike terrain that rises into the disc (mountain levels). */
+  rotorStrike?: boolean;
 }
 
 export type FlightEvent =
@@ -30,12 +32,82 @@ export type FlightEvent =
   | { type: 'landed'; x: number; z: number }
   | { type: 'hardLanding'; severity: number }
   | { type: 'collision'; impact: number }
+  | { type: 'rotorStrike'; impact: number }
   | { type: 'crashed'; reason: string }
   | { type: 'lowFuel' }
   | { type: 'fuelEmpty' };
 
 const LOW_FUEL = 0.2;
 const MAX_SLOPE = 0.12;
+/** Extra thrust in ground effect (rotor close to the ground) and in translational lift (moving air). */
+const GROUND_EFFECT = 0.12;
+const TRANSLATIONAL_LIFT = 0.15;
+/** Sink rate in m/s per unit of thrust shortfall when too heavy to hover. */
+const SINK_PER_DEFICIT = 30;
+const ROTOR_SAMPLES = 16;
+
+/**
+ * Fraction of sea-level rotor thrust available at an altitude above sea level. Falls linearly so
+ * that the empty aircraft can only just hover at its service ceiling. Always 1 for aircraft
+ * without a service ceiling.
+ */
+export const liftAtAltitude = (spec: HeliSpec, altitude: number): number => {
+  if (!spec.serviceCeiling || !spec.hoverThrust) return 1;
+  const atCeiling = 1 / spec.hoverThrust;
+  return clamp(1 - ((1 - atCeiling) * Math.max(0, altitude)) / spec.serviceCeiling, 0.2, 1);
+};
+
+/**
+ * Thrust over weight for an aircraft with a service ceiling (1 = can just hold a hover).
+ * Ground effect helps within about a rotor diameter of the ground, and translational lift
+ * helps once air flows through the disc at more than a few metres per second.
+ */
+export const thrustRatio = (spec: HeliSpec, altitude: number, payload: number, agl: number, airspeed: number): number => {
+  const base = (spec.hoverThrust ?? 1) * liftAtAltitude(spec, altitude) * (spec.mass / (spec.mass + payload));
+  const ground = GROUND_EFFECT * clamp(1 - agl / (spec.rotorRadius * 1.6), 0, 1);
+  const translational = TRANSLATIONAL_LIFT * smoothstep(3, 14, airspeed);
+  return base * (1 + ground + translational);
+};
+
+export interface RotorProximity {
+  /** Horizontal gap between the blade tips and terrain at rotor height, in metres. */
+  distance: number;
+  /** Unit direction from the aircraft towards the terrain. */
+  dirX: number;
+  dirZ: number;
+}
+
+/**
+ * Nearest terrain at rotor height within `range` metres of the blade tips, for the terrain
+ * warning. Returns undefined when everything around the disc is clear.
+ */
+export const rotorProximity = (
+  spec: HeliSpec,
+  x: number,
+  y: number,
+  z: number,
+  groundHeightAt: (x: number, z: number) => number,
+  range = 14,
+): RotorProximity | undefined => {
+  const disc = y + spec.rotorHeight - 0.5;
+  for (let d = 0; d <= range; d += 1.5) {
+    const r = spec.rotorRadius + d;
+    let best: RotorProximity | undefined;
+    let worst = 0;
+    for (let i = 0; i < ROTOR_SAMPLES; i++) {
+      const a = (i / ROTOR_SAMPLES) * Math.PI * 2;
+      const dx = Math.sin(a);
+      const dz = Math.cos(a);
+      const over = groundHeightAt(x + dx * r, z + dz * r) - disc;
+      if (over > worst || (over >= 0 && !best)) {
+        worst = over;
+        best = { distance: d, dirX: dx, dirZ: dz };
+      }
+    }
+    if (best) return best;
+  }
+  return undefined;
+};
 
 /**
  * Arcade flight model. The stick tilts the rotor disc towards a world-space direction,
@@ -64,9 +136,15 @@ export class FlightModel {
   fuel = 1;
   /** 0..1, destroyed at 1. */
   damage = 0;
-  /** Mass of any slung load in kg. */
+  /** Mass of any slung load or passengers in kg. */
   payload = 0;
+  /**
+   * Spare thrust as a fraction of weight (0 = can only just hover, negative = sinking). Only
+   * meaningful for aircraft with a service ceiling; always positive for the others.
+   */
+  thrustMargin = 1;
   private lowFuelWarned = false;
+  private strikeCooldown = 0;
 
   constructor(spec: HeliSpec) {
     this.spec = spec;
@@ -96,6 +174,11 @@ export class FlightModel {
     if (this.landed || this.destroyed) return;
     this.vx += dvx;
     this.vz += dvz;
+  }
+
+  /** True if the aircraft's performance falls with altitude. */
+  get thinAir(): boolean {
+    return !!this.spec.serviceCeiling;
   }
 
   /** Fraction of full lift currently available from the rotor. */
@@ -128,6 +211,14 @@ export class FlightModel {
     if (this.fuel >= LOW_FUEL) this.lowFuelWarned = false;
 
     const lift = this.liftAvailable;
+    this.strikeCooldown = Math.max(0, this.strikeCooldown - dt);
+    const windX = env.wind?.x ?? 0;
+    const windZ = env.wind?.z ?? 0;
+    if (this.thinAir) {
+      const agl = Math.max(0, this.y - env.groundHeightAt(this.x, this.z));
+      const airspeed = Math.hypot(this.vx - windX, this.vz - windZ);
+      this.thrustMargin = thrustRatio(s, this.y, this.payload, this.landed ? 0 : agl, airspeed) - 1;
+    }
     let mx = input.moveX;
     let mz = input.moveZ;
     const mag = Math.hypot(mx, mz);
@@ -140,7 +231,8 @@ export class FlightModel {
       this.tiltX = damp(this.tiltX, 0, 6, dt);
       this.tiltZ = damp(this.tiltZ, 0, 6, dt);
       this.vx = this.vz = this.vy = 0;
-      if (input.climb > 0.1 && lift > 0.95) {
+      // Too heavy for the thin air: the skids stay on the ground.
+      if (input.climb > 0.1 && lift > 0.95 && this.thrustMargin > 0) {
         this.landed = false;
         this.y += 0.05;
         events.push({ type: 'takeoff' });
@@ -165,7 +257,7 @@ export class FlightModel {
     }
     this.tiltX = damp(this.tiltX, targetX, s.cyclicResponse, dt);
     this.tiltZ = damp(this.tiltZ, targetZ, s.cyclicResponse, dt);
-    const perf = this.performance;
+    const perf = this.performance * liftAtAltitude(s, this.y);
     const authority = (0.3 + 0.7 * lift) * perf;
     // Drag acts on airspeed, so wind pushes the aircraft unless the pilot compensates.
     const drag = s.acceleration / s.maxSpeed;
@@ -178,6 +270,14 @@ export class FlightModel {
     const ground = env.groundHeightAt(this.x, this.z);
     const climb = clamp(input.climb, -1, 1);
     let targetVy = climb * s.climbRate * (climb > 0 ? perf : 1);
+    if (this.thinAir) {
+      // Climb rate follows spare thrust; with none to spare the aircraft sinks however hard
+      // the collective is pulled.
+      const e = this.thrustMargin;
+      const reserve = ((s.hoverThrust ?? 1) - 1) * 0.5;
+      const maxVy = e >= 0 ? s.climbRate * Math.min(1, e / reserve) : e * SINK_PER_DEFICIT;
+      targetVy = Math.min(climb * s.climbRate, maxVy);
+    }
     if (this.y - ground >= s.maxAltitude) targetVy = Math.min(targetVy, 0);
     targetVy += env.updraft ?? 0;
     // Landing cushion: limit the sink rate near the ground and flare harder to meet it.
@@ -210,6 +310,8 @@ export class FlightModel {
     }
 
     this.resolveSolids(env.solids, prevY, events);
+    if (this.destroyed) return events;
+    if (env.rotorStrike) this.resolveRotorTerrain(env, events);
     if (this.destroyed) return events;
     this.resolveBounds(env.bounds);
     this.resolveGround(env, events);
@@ -251,6 +353,47 @@ export class FlightModel {
         }
       }
     }
+  }
+
+  /** Blades striking terrain that rises into the disc: knocked back and damaged, or destroyed. */
+  private resolveRotorTerrain(env: FlightEnvironment, events: FlightEvent[]): void {
+    const s = this.spec;
+    const disc = this.y + s.rotorHeight;
+    let worst = 0;
+    let dirX = 0;
+    let dirZ = 0;
+    for (const r of [s.rotorRadius, s.rotorRadius * 0.6]) {
+      for (let i = 0; i < ROTOR_SAMPLES; i++) {
+        const a = (i / ROTOR_SAMPLES) * Math.PI * 2;
+        const dx = Math.sin(a);
+        const dz = Math.cos(a);
+        const over = env.groundHeightAt(this.x + dx * r, this.z + dz * r) - disc;
+        if (over > worst) {
+          worst = over;
+          dirX = dx;
+          dirZ = dz;
+        }
+      }
+    }
+    if (worst <= 0) return;
+    // Bounce away from the slope.
+    this.x -= dirX * Math.min(1, 0.2 + worst * 0.3);
+    this.z -= dirZ * Math.min(1, 0.2 + worst * 0.3);
+    const vn = this.vx * dirX + this.vz * dirZ;
+    if (vn > 0) {
+      this.vx -= dirX * vn * 1.6;
+      this.vz -= dirZ * vn * 1.6;
+    }
+    const impact = Math.max(0, vn) + Math.max(0, -this.vy) * 0.5;
+    if (this.vy < 0) this.vy *= 0.3;
+    if (impact > s.crashSpeed * 0.5) {
+      this.crash('Rotor struck the mountainside', events);
+      return;
+    }
+    if (this.strikeCooldown > 0) return;
+    this.strikeCooldown = 0.6;
+    events.push({ type: 'rotorStrike', impact });
+    this.addDamage(0.15 + impact * 0.08, events);
   }
 
   private resolveBounds(b: Bounds): void {
@@ -315,6 +458,13 @@ export class FlightModel {
     this.damage = 1;
     this.vx = this.vy = this.vz = 0;
     events.push({ type: 'crashed', reason });
+  }
+
+  /** Destroys the aircraft from outside the flight model, such as on a wire strike. */
+  wreck(reason: string): FlightEvent[] {
+    const events: FlightEvent[] = [];
+    if (!this.destroyed) this.crash(reason, events);
+    return events;
   }
 
   /** Refuels and repairs at the given rates per second; used on service pads. */

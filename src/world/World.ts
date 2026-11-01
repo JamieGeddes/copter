@@ -1,10 +1,13 @@
-import { createRng } from '../core/math';
+import { clamp, createRng } from '../core/math';
 import { Bounds, pointInSolid, Solid } from './collision';
 import { BuildingDef, LevelDef, PadDef } from './level';
 import { Terrain } from './Terrain';
-import { Wind } from './Wind';
+import { Noise2D } from './noise';
+import { LocalWind, Wind } from './Wind';
 
 export const PAD_HEIGHT = 0.3;
+/** How far a cable car wire sags at mid-span, in metres. */
+export const CABLE_SAG = 3;
 
 export interface PlacedBuilding extends BuildingDef {
   /** Ground height the building stands on. */
@@ -18,6 +21,16 @@ export interface PlacedPad extends PadDef {
   /** Height of the pad surface. */
   top: number;
   solid: Solid;
+}
+
+/** A straight span of cable between two points in the air. */
+export interface CableSpan {
+  ax: number;
+  ay: number;
+  az: number;
+  bx: number;
+  by: number;
+  bz: number;
 }
 
 export type ScatterKind = 'cactus' | 'boulder' | 'rock' | 'bush' | 'tree';
@@ -41,12 +54,15 @@ export class World {
   readonly pads: PlacedPad[];
   readonly scatter: ScatterItem[];
   readonly solids: Solid[] = [];
+  /** Cable car wires, span by span. */
+  readonly cables: CableSpan[] = [];
   /** Sea surface height, if the level has water. */
   readonly seaLevel?: number;
   readonly wind?: Wind;
   /** Rising air in m/s at the aircraft, set by the session from heat over a fire. */
   updraft = 0;
   private readonly landables: Solid[] = [];
+  private readonly airNoise = new Noise2D(911);
 
   constructor(level: LevelDef, terrain: Terrain = Terrain.generate(level.terrain)) {
     this.level = level;
@@ -92,6 +108,18 @@ export class World {
       return { ...p, top, solid };
     });
 
+    for (const way of level.cableways ?? []) {
+      const tops = way.points.map((p) => {
+        const b = this.buildings.find((q) => Math.hypot(q.x - p.x, q.z - p.z) < 1);
+        return { x: p.x, z: p.z, y: b ? b.base + b.h - 0.6 : terrain.heightAt(p.x, p.z) + 20 };
+      });
+      for (let i = 0; i < tops.length - 1; i++) {
+        const a = tops[i];
+        const b = tops[i + 1];
+        this.cables.push({ ax: a.x, ay: a.y, az: a.z, bx: b.x, by: b.y, bz: b.z });
+      }
+    }
+
     this.scatter = this.placeScatter();
     for (const item of this.scatter) {
       if (item.kind === 'cactus' || item.kind === 'tree') {
@@ -113,6 +141,46 @@ export class World {
       if (s.top > h && pointInSolid(x, z, s)) h = s.top;
     }
     return h;
+  }
+
+  /**
+   * Wind at a point in the air. On levels with orographic wind, air blowing up a slope rises and
+   * air blowing down one sinks, both fading with height above the ground; downwind of higher
+   * ground the wind drops but churns. Elsewhere this is just the level's gusty wind.
+   */
+  windAt(x: number, z: number, y: number): LocalWind {
+    const w = this.wind;
+    if (!w) return { x: 0, z: 0, up: 0, turbulence: 0 };
+    const k = w.def.orographic ?? 0;
+    if (!k) return { x: w.x, z: w.z, up: 0, turbulence: 0 };
+    const t = this.terrain;
+    const e = 12;
+    const dhdx = (t.heightAt(x + e, z) - t.heightAt(x - e, z)) / (2 * e);
+    const dhdz = (t.heightAt(x, z + e) - t.heightAt(x, z - e)) / (2 * e);
+    const agl = Math.max(0, y - t.heightAt(x, z));
+    const decay = Math.exp(-agl / 70);
+    let up = k * (w.x * dhdx + w.z * dhdz) * decay;
+
+    // Shelter: ground upwind that stands above the aircraft.
+    const speed = Math.max(0.1, w.speed);
+    const ux = w.x / speed;
+    const uz = w.z / speed;
+    let shelter = 0;
+    for (const d of [25, 50, 90, 140]) {
+      const above = t.heightAt(x - ux * d, z - uz * d) - y;
+      shelter = Math.max(shelter, clamp((above - 5) / 45, 0, 1));
+    }
+    const turbulence = shelter * clamp(speed / 6, 0, 1.5);
+    const time = w.time;
+    const n = this.airNoise;
+    const churn = turbulence * speed * 0.9;
+    up += -1.2 * shelter * decay + n.noise(time * 1.3 + x / 25, z / 25 + 40) * turbulence * 2.5;
+    return {
+      x: w.x * (1 - 0.5 * shelter) + n.noise(time * 1.1 + x / 30, z / 30) * churn,
+      z: w.z * (1 - 0.5 * shelter) + n.noise(x / 30 - 17, time * 1.1 + z / 30) * churn,
+      up: clamp(up, -6, 6),
+      turbulence: clamp(turbulence, 0, 1),
+    };
   }
 
   /** True if the point is open water (not a deck, quay or pad standing in it). */
@@ -141,6 +209,26 @@ export class World {
     const p = this.pads.find((pad) => pad.id === id);
     if (!p) throw new Error(`Unknown pad: ${id}`);
     return p;
+  }
+
+  /** Height of a cable span at a fraction `t` along it, including the sag. */
+  static cableHeight(c: CableSpan, t: number): number {
+    return c.ay + (c.by - c.ay) * t - Math.sin(t * Math.PI) * CABLE_SAG;
+  }
+
+  /**
+   * True if a cable passes through a horizontal rotor disc of the given radius centred on a hub,
+   * within `band` metres of the disc's height.
+   */
+  cableStrike(x: number, hubY: number, z: number, radius: number, band = 1): boolean {
+    for (const c of this.cables) {
+      const dx = c.bx - c.ax;
+      const dz = c.bz - c.az;
+      const t = clamp(((x - c.ax) * dx + (z - c.az) * dz) / (dx * dx + dz * dz), 0, 1);
+      if (Math.hypot(x - (c.ax + dx * t), z - (c.az + dz * t)) > radius) continue;
+      if (Math.abs(World.cableHeight(c, t) - hubY) < band) return true;
+    }
+    return false;
   }
 
   /** True if a point is clear of buildings, pads, roads and designated clearings. */
@@ -182,7 +270,7 @@ export class World {
       ['bush', bushes, 1],
     ];
     const sea = this.seaLevel;
-    const forest = this.terrain.kind === 'forest';
+    const forest = this.terrain.wooded;
     for (const [kind, count, margin] of plan) {
       let placed = 0;
       let attempts = 0;
@@ -193,6 +281,9 @@ export class World {
         const slope = this.terrain.slopeAt(x, z);
         if (kind === 'cactus' && (slope > 0.08 || Math.abs(x) > 470 || Math.abs(z) > 470)) continue;
         if (kind === 'bush' && slope > 0.2) continue;
+        // Nothing grows on the high mountain.
+        const cfg = this.level.terrain;
+        if (cfg.kind === 'alpine' && (kind === 'bush' || kind === 'tree') && this.terrain.heightAt(x, z) > cfg.treeLine) continue;
         if (kind === 'tree' && slope > (forest ? 0.3 : 0.12)) continue;
         // Forests plant trees where the woodland is dense and leave meadows open.
         if (forest && (kind === 'tree' || kind === 'bush') && rng() > this.terrain.canopyAt(x, z) * (kind === 'tree' ? 1.15 : 0.6) - (kind === 'tree' ? 0.05 : -0.1)) continue;

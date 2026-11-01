@@ -1,5 +1,6 @@
 import { BufferGeometry, Color, CylinderGeometry, Euler, Float32BufferAttribute, Matrix4, MeshLambertMaterial, Quaternion, Vector3 } from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { addCloud } from './cloud';
 
 export interface PartTransform {
   x?: number;
@@ -58,6 +59,8 @@ export const propMaterial = new MeshLambertMaterial({ vertexColors: true, flatSh
 
 /** Smooth-shaded variant for rounded shapes. */
 export const smoothPropMaterial = new MeshLambertMaterial({ vertexColors: true });
+addCloud(propMaterial);
+addCloud(smoothPropMaterial);
 
 /** Multiplies a hex colour's brightness; handy for shading variants. */
 export const shade = (hex: number, factor: number): Color => new Color(hex).multiplyScalar(factor);

@@ -53,12 +53,16 @@ export interface MissionSnapshot {
   cargo?: CargoSnapshot[];
   bucket?: BucketSnapshot;
   fire?: FireSnapshot;
+  /** Survivor being reeled in or walking to the aircraft, safe from the cloud. */
+  boardingId?: string;
 }
 
 export type MissionEvent =
   | { type: 'objectiveComplete'; index: number; text: string }
   | { type: 'gatePassed'; index: number; total: number }
   | { type: 'passengerUnloaded'; remaining: number }
+  /** The cloud base is closing in on a site where survivors are still waiting. */
+  | { type: 'cloudWarning'; site: string }
   | { type: 'complete'; time: number }
   | { type: 'failed'; reason: string };
 
@@ -66,6 +70,10 @@ export type MissionStatus = 'running' | 'complete' | 'failed';
 
 const HOVER_SPEED_LIMIT = 3;
 const UNLOAD_SECONDS = 1.5;
+/** Warn when the cloud base is this far above a waiting survivor. */
+const CLOUD_WARNING = 45;
+/** Height of the aircraft's cabin above its skids, for deciding when it is in cloud. */
+const CABIN_HEIGHT = 1.8;
 
 /** Steps a mission's objectives in order and reports progress. */
 export class MissionRunner {
@@ -86,6 +94,9 @@ export class MissionRunner {
   private gateIndex = 0;
   private unloadTimer = 0;
   private protectHeld = 0;
+  /** Seconds spent in cloud, recovering slowly once clear. */
+  cloudExposure = 0;
+  private readonly cloudWarned = new Set<string>();
 
   constructor(def: MissionDef) {
     this.def = def;
@@ -128,8 +139,10 @@ export class MissionRunner {
         return `Hold ${o.minAlt}-${o.maxAlt} m: ${Math.min(o.seconds, this.hoverHeld).toFixed(1)} / ${o.seconds} s`;
       case 'gates':
         return `Gate ${Math.min(this.gateIndex + 1, o.gates.length)} of ${o.gates.length}`;
-      case 'rescue':
-        return `Rescued ${o.survivors.filter((id) => this.rescued.has(id)).length} of ${o.survivors.length} · aboard ${this.onboard}/${this.def.capacity ?? '∞'}`;
+      case 'rescue': {
+        const line = `Rescued ${o.survivors.filter((id) => this.rescued.has(id)).length} of ${o.survivors.length} · aboard ${this.onboard}/${this.def.capacity ?? '∞'}`;
+        return this.tripPad && this.delivered > 0 ? `${line} · safe ${this.delivered}` : line;
+      }
       case 'deliver':
         return `Aboard: ${this.onboard}`;
       case 'place':
@@ -147,10 +160,29 @@ export class MissionRunner {
     return o?.kind === 'gates' ? o.gates[this.gateIndex] : undefined;
   }
 
-  /** Pad the player should land on now, if any. */
+  /** Pad the player should land on now, if any. A full cabin heads for the delivery pad. */
   get targetPad(): string | undefined {
     const o = this.objective;
+    if (o?.kind === 'rescue' && this.onboard > 0 && this.capacityLeft <= 0) return this.tripPad;
     return o?.kind === 'land' || o?.kind === 'deliver' ? o.pad : undefined;
+  }
+
+  /**
+   * Pad of the delivery that follows the current rescue, where passengers can be dropped off
+   * part way through when the cabin is too small to carry everyone at once.
+   */
+  get tripPad(): string | undefined {
+    if (this.objective?.kind !== 'rescue') return undefined;
+    const next = this.def.objectives.slice(this.index + 1).find((o) => o.kind === 'deliver');
+    return next?.kind === 'deliver' ? next.pad : undefined;
+  }
+
+  /** Height above sea level of the cloud base, or Infinity in clear weather. */
+  get cloudBase(): number {
+    const w = this.def.weather;
+    if (!w) return Infinity;
+    const t = Math.min(1, this.elapsed / w.duration);
+    return w.cloudStart + (w.cloudEnd - w.cloudStart) * t;
   }
 
   /** The active placement zone, if any. */
@@ -200,6 +232,8 @@ export class MissionRunner {
       }
     }
 
+    if (this.def.weather && this.checkWeather(dt, s, events)) return events;
+
     // Allow several objectives to complete in one tick (e.g. landing completes two).
     for (let guard = 0; guard < 4 && this.objective; guard++) {
       if (!this.check(dt, s, events, this.objective)) break;
@@ -243,8 +277,11 @@ export class MissionRunner {
       }
       case 'land':
         return s.landed && s.padId === o.pad;
-      case 'rescue':
+      case 'rescue': {
+        const pad = this.tripPad;
+        if (pad) this.unload(dt, s, pad, events);
         return o.survivors.every((id) => this.rescued.has(id));
+      }
       case 'hook':
         return !!s.cargo?.find((c) => c.id === o.cargo)?.hooked;
       case 'fill':
@@ -262,23 +299,55 @@ export class MissionRunner {
         this.placedNow = 0;
         return true;
       }
-      case 'deliver': {
-        if (!(s.landed && s.padId === o.pad)) {
-          this.unloadTimer = 0;
-          return false;
-        }
-        if (this.onboard > 0) {
-          this.unloadTimer += dt;
-          if (this.unloadTimer >= UNLOAD_SECONDS) {
-            this.unloadTimer = 0;
-            this.onboard--;
-            this.delivered++;
-            events.push({ type: 'passengerUnloaded', remaining: this.onboard });
-          }
-        }
-        return this.onboard === 0;
+      case 'deliver':
+        return this.unload(dt, s, o.pad, events) && this.onboard === 0;
+    }
+  }
+
+  /** Lets passengers off one at a time while landed on the pad. Returns true while on the pad. */
+  private unload(dt: number, s: MissionSnapshot, pad: string, events: MissionEvent[]): boolean {
+    if (!(s.landed && s.padId === pad)) {
+      this.unloadTimer = 0;
+      return false;
+    }
+    if (this.onboard > 0) {
+      this.unloadTimer += dt;
+      if (this.unloadTimer >= UNLOAD_SECONDS) {
+        this.unloadTimer = 0;
+        this.onboard--;
+        this.delivered++;
+        events.push({ type: 'passengerUnloaded', remaining: this.onboard });
       }
     }
+    return true;
+  }
+
+  /**
+   * The lowering cloud: too long inside it disorients the pilot, and a site swallowed by it before
+   * everyone there is rescued loses the mission. Returns true if the mission failed.
+   */
+  private checkWeather(dt: number, s: MissionSnapshot, events: MissionEvent[]): boolean {
+    const w = this.def.weather!;
+    const base = this.cloudBase;
+    const inCloud = !s.destroyed && s.y + CABIN_HEIGHT > base;
+    this.cloudExposure = inCloud ? this.cloudExposure + dt : Math.max(0, this.cloudExposure - dt * 0.5);
+    if (this.cloudExposure >= w.maxExposure) {
+      this.fail('Lost in cloud', events);
+      return true;
+    }
+    for (const sv of this.def.survivors ?? []) {
+      if (this.rescued.has(sv.id) || sv.id === s.boardingId) continue;
+      const site = sv.site ?? 'a survivor';
+      if (sv.y + CABIN_HEIGHT > base) {
+        this.fail(`Cloud closed in over ${site}`, events);
+        return true;
+      }
+      if (base - sv.y < CLOUD_WARNING && !this.cloudWarned.has(site)) {
+        this.cloudWarned.add(site);
+        events.push({ type: 'cloudWarning', site });
+      }
+    }
+    return false;
   }
 
   private cargoLabel(id: string): string {

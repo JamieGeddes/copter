@@ -21,7 +21,9 @@ export type BuildingKind =
   | 'barn'
   | 'brokenDeck'
   | 'cabin'
-  | 'lookout';
+  | 'lookout'
+  | 'pylon'
+  | 'cableStation';
 
 export interface BuildingDef {
   kind: BuildingKind;
@@ -105,6 +107,11 @@ export interface LevelDef {
   roads: [number, number][][];
   crowds: CrowdDef[];
   scatter: ScatterDef;
+  /**
+   * Cable cars: a haul cable strung across the tops of the buildings (stations and pylons) at
+   * each point, in order. The wire is a hazard to the rotor.
+   */
+  cableways?: { points: { x: number; z: number }[] }[];
   /** Keep-clear circles for scattered props (in addition to buildings, pads and roads). */
   clearings: { x: number; z: number; radius: number }[];
 }

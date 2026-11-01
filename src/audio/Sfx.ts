@@ -1,6 +1,6 @@
 import { RotorAudio } from './RotorAudio';
 
-export type SfxName = 'gate' | 'objective' | 'complete' | 'fail' | 'attach' | 'rescued' | 'warning' | 'move' | 'select' | 'unload';
+export type SfxName = 'gate' | 'objective' | 'complete' | 'fail' | 'attach' | 'rescued' | 'warning' | 'move' | 'select' | 'unload' | 'proximity';
 
 type Note = [frequency: number, start: number, duration: number];
 
@@ -19,6 +19,7 @@ const SEQUENCES: Record<SfxName, { notes: Note[]; type: OscillatorType; gain: nu
   move: { notes: [[660, 0, 0.04]], type: 'square', gain: 0.04 },
   select: { notes: [[660, 0, 0.05], [990, 0.05, 0.08]], type: 'square', gain: 0.05 },
   unload: { notes: [[587, 0, 0.08], [880, 0.08, 0.12]], type: 'triangle', gain: 0.1 },
+  proximity: { notes: [[1480, 0, 0.06]], type: 'square', gain: 0.045 },
 };
 
 /** Short chiptune cues plus a looping winch motor whine. */

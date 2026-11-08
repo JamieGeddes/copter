@@ -30,6 +30,11 @@ export type ObjectiveDef =
   | { kind: 'protect'; text: string; label: string; x: number; z: number; radius: number; seconds: number; orExtinguished?: boolean }
   /** Put out every burning cell. */
   | { kind: 'extinguish'; text: string }
+  /**
+   * Answer a series of emergency calls: collect each casualty from its scene and land them on the
+   * roof of the hospital that treats them before their timer runs out.
+   */
+  | { kind: 'casualties'; text: string; casualties: string[] }
   | {
       kind: 'place';
       text: string;
@@ -70,6 +75,37 @@ export interface WeatherDef {
   maxExposure: number;
 }
 
+/** Which hospital a casualty needs. */
+export type CasualtyCare = 'trauma' | 'burns';
+
+/** An emergency call: a casualty at a scene who must reach the right hospital in time. */
+export interface CasualtyDef {
+  id: string;
+  /** Name of the incident, such as "Motorway collision". */
+  label: string;
+  severity: 'critical' | 'serious';
+  care: CasualtyCare;
+  /** Pad of the hospital that treats this casualty. */
+  hospital: string;
+  /** Centre of the cordoned landing zone, and its radius. */
+  x: number;
+  z: number;
+  radius: number;
+  /**
+   * Seconds after the calls begin when this call comes in. A call may come in sooner when the
+   * crew has nothing else to do.
+   */
+  callAt: number;
+  /** Seconds from the call until the casualty is lost if not handed over at the hospital. */
+  timer: number;
+  /** Handed over within this many seconds of the call counts as inside the golden hour. */
+  golden: number;
+  /** Where the fire is burning at the scene, if there is one: flames, smoke and a glow. */
+  fire?: { x: number; z: number };
+  /** No street lighting: the searchlight is needed to find the zone. */
+  dark?: boolean;
+}
+
 export interface MedalTimes {
   /** Finishing times in seconds. */
   gold: number;
@@ -98,4 +134,6 @@ export interface MissionDef {
   cargo?: CargoDef[];
   /** A lowering cloud layer. */
   weather?: WeatherDef;
+  /** Emergency calls for a `casualties` objective. */
+  casualties?: CasualtyDef[];
 }

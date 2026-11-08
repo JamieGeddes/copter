@@ -13,6 +13,7 @@ export const BINDINGS = {
   help: ['KeyH'],
   mute: ['KeyM'],
   heightLine: ['KeyL'],
+  searchlight: ['KeyF'],
   confirm: ['Enter', 'NumpadEnter'],
   back: ['Escape', 'Backspace'],
   restart: ['KeyR'],

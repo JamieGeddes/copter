@@ -40,6 +40,10 @@ export interface HeliVisualParts {
   winch?: Object3D;
   /** Belly cargo hook, if fitted. */
   hook?: Object3D;
+  /** Searchlight mounting under the nose, if fitted. */
+  searchlight?: Object3D;
+  /** Navigation and anti-collision lights, if fitted. */
+  lights?: { object: Object3D; colour: number; size: number; kind: 'steady' | 'strobe' | 'beacon' }[];
 }
 
 let discTexture: CanvasTexture | undefined;

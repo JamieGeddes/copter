@@ -1,4 +1,5 @@
 import { wrapAngle } from '../core/math';
+import { Medevac, MedevacEvent } from './Medevac';
 import { GateDef, MissionDef, ObjectiveDef } from './types';
 
 export interface CargoSnapshot {
@@ -63,6 +64,8 @@ export type MissionEvent =
   | { type: 'passengerUnloaded'; remaining: number }
   /** The cloud base is closing in on a site where survivors are still waiting. */
   | { type: 'cloudWarning'; site: string }
+  /** Something happened to a casualty on a medevac mission. */
+  | { type: 'casualty'; event: MedevacEvent }
   | { type: 'complete'; time: number }
   | { type: 'failed'; reason: string };
 
@@ -97,9 +100,12 @@ export class MissionRunner {
   /** Seconds spent in cloud, recovering slowly once clear. */
   cloudExposure = 0;
   private readonly cloudWarned = new Set<string>();
+  /** Casualty queue, on missions with emergency calls. */
+  readonly medevac?: Medevac;
 
   constructor(def: MissionDef) {
     this.def = def;
+    if (def.casualties?.length) this.medevac = new Medevac(def.casualties);
   }
 
   get objective(): ObjectiveDef | undefined {
@@ -125,6 +131,8 @@ export class MissionRunner {
         return this.placedNow / o.cargo.length;
       case 'protect':
         return Math.min(1, this.protectHeld / o.seconds);
+      case 'casualties':
+        return (this.medevac?.delivered ?? 0) / o.casualties.length;
       default:
         return 0;
     }
@@ -149,6 +157,10 @@ export class MissionRunner {
         return o.cargo.length > 1 ? `Delivered ${this.placedNow} of ${o.cargo.length}` : '';
       case 'protect':
         return `Hold the line: ${Math.min(o.seconds, this.protectHeld).toFixed(0)} / ${o.seconds} s`;
+      case 'casualties': {
+        const m = this.medevac;
+        return m ? `Delivered ${m.delivered} of ${o.casualties.length} · golden hour ${m.golden}` : '';
+      }
       default:
         return '';
     }
@@ -163,6 +175,7 @@ export class MissionRunner {
   /** Pad the player should land on now, if any. A full cabin heads for the delivery pad. */
   get targetPad(): string | undefined {
     const o = this.objective;
+    if (o?.kind === 'casualties') return this.medevac?.aboard?.def.hospital;
     if (o?.kind === 'rescue' && this.onboard > 0 && this.capacityLeft <= 0) return this.tripPad;
     return o?.kind === 'land' || o?.kind === 'deliver' ? o.pad : undefined;
   }
@@ -237,6 +250,7 @@ export class MissionRunner {
     // Allow several objectives to complete in one tick (e.g. landing completes two).
     for (let guard = 0; guard < 4 && this.objective; guard++) {
       if (!this.check(dt, s, events, this.objective)) break;
+      if (this.status !== 'running') return events;
       events.push({ type: 'objectiveComplete', index: this.index, text: this.objective.text });
       this.index++;
       this.hoverHeld = 0;
@@ -301,6 +315,18 @@ export class MissionRunner {
       }
       case 'deliver':
         return this.unload(dt, s, o.pad, events) && this.onboard === 0;
+      case 'casualties': {
+        const m = this.medevac;
+        if (!m) return true;
+        for (const event of m.update(dt, s)) {
+          events.push({ type: 'casualty', event });
+          if (event.type === 'lost') {
+            this.fail(`Casualty lost: ${m.status(event.id).def.label}`, events);
+            return false;
+          }
+        }
+        return o.casualties.every((id) => m.status(id).state === 'delivered');
+      }
     }
   }
 

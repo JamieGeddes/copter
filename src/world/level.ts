@@ -23,7 +23,26 @@ export type BuildingKind =
   | 'cabin'
   | 'lookout'
   | 'pylon'
-  | 'cableStation';
+  | 'cableStation'
+  /** City: glass office tower with lit windows. */
+  | 'tower'
+  /** City: brick block of flats with lit windows. */
+  | 'flats'
+  /** City: low terraced houses with lit windows. */
+  | 'terrace'
+  | 'warehouse'
+  /** A stadium stand facing the pitch on its +z side. */
+  | 'stand'
+  /** Floodlight mast with a lamp bank at the top. */
+  | 'floodlight'
+  /** Bridge deck over the river, on piers. */
+  | 'bridge'
+  /** Tower crane mast; its jib is a wire hazard (see `LevelDef.cableways`). */
+  | 'crane'
+  /** Thin lattice radio mast with warning lights. */
+  | 'mast'
+  /** Steel lattice electricity pylon. */
+  | 'powerPylon';
 
 export interface BuildingDef {
   kind: BuildingKind;
@@ -83,6 +102,9 @@ export interface FireDef {
   assets: { id: string; label: string; x: number; z: number; radius: number }[];
 }
 
+/** A cable car haul rope, overhead power lines, or the rigid jib of a tower crane. */
+export type WireKind = 'cable' | 'power' | 'jib';
+
 export interface LevelDef {
   id: string;
   name: string;
@@ -92,8 +114,8 @@ export interface LevelDef {
   terrain: TerrainConfig;
   /** Sea surface height, if the level has open water. */
   seaLevel?: number;
-  /** Look of the water: open sea (default) a muddy river in flood, or a still forest lake. */
-  waterStyle?: 'sea' | 'river' | 'lake';
+  /** Look of the water: open sea (default), a muddy river in flood, a still forest lake or a city river at night. */
+  waterStyle?: 'sea' | 'river' | 'lake' | 'city';
   wind?: WindDef;
   /** A wildfire burning on a fire grid over the terrain. */
   fire?: FireDef;
@@ -108,10 +130,12 @@ export interface LevelDef {
   crowds: CrowdDef[];
   scatter: ScatterDef;
   /**
-   * Cable cars: a haul cable strung across the tops of the buildings (stations and pylons) at
-   * each point, in order. The wire is a hazard to the rotor.
+   * Wires strung across the tops of the buildings at each point, in order: cable cars, power
+   * lines and crane jibs. They are a hazard to the rotor. A point with `y` sets the height there.
    */
-  cableways?: { points: { x: number; z: number }[] }[];
+  cableways?: { kind?: WireKind; points: { x: number; z: number; y?: number }[] }[];
+  /** Dual carriageways, drawn wider than ordinary roads. */
+  motorways?: [number, number][][];
   /** Keep-clear circles for scattered props (in addition to buildings, pads and roads). */
   clearings: { x: number; z: number; radius: number }[];
 }

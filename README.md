@@ -20,6 +20,7 @@ npm run build    # production build in dist/
 | Shift / Z | Descend |
 | + / − / mouse wheel | Zoom |
 | E | Release slung load / drop bucket water |
+| F | Searchlight: auto, locked ahead or off (Night Medevac) |
 | L | Toggle height line |
 | M | Mute |
 | P / Esc | Pause |
@@ -33,10 +34,10 @@ npm run build    # production build in dist/
 |---|---|
 | `src/core` | App state machine (menus, progress), level session |
 | `src/levels` | Level and mission data, campaign order |
-| `src/missions` | Mission runner, rescue winch, landing pickups, slung cargo, water bucket, medals |
+| `src/missions` | Mission runner, rescue winch, landing pickups, casualty queue, slung cargo, water bucket, medals |
 | `src/heli` | Flight model, helicopter specs, models and rotors |
-| `src/world` | Terrain generation (desert, coast, floodplain, forest, alpine), wind and mountain air, collision, crowd behaviour, fire spread model and fuel map |
-| `src/render` | Renderer, isometric camera, terrain, water, props, cloud layer, mission, bucket and fire visuals |
+| `src/world` | Terrain generation (desert, coast, floodplain, forest, alpine, city), city layout, traffic, wind (mountain air, gusts between towers), wires, collision, crowd behaviour, fire spread model and fuel map |
+| `src/render` | Renderer, isometric camera, terrain, water, props, lit windows, night lights, searchlight, traffic, cloud layer, mission, incident, bucket and fire visuals |
 | `src/fx` | Particle effects (dust, smoke, fire) |
 | `src/input` | Keyboard bindings |
 | `src/audio` | Synthesised rotor sound |
@@ -52,7 +53,7 @@ npm run build    # production build in dist/
 | 3 | Heavy Lift | Hauler CH-4 (twin rotor) | Swinging underslung loads | Playable |
 | 4 | Wildfire | Bucketeer FH-2 | Route planning and timing | Playable |
 | 5 | Mountain Rescue | Chamois AS-5 | Terrain flying in thin air | Playable |
-| 6 | Night Medevac | Lifeline EC-1 | Speed and tight landings | Planned |
+| 6 | Night Medevac | Lifeline EC-1 | Speed and tight landings | Playable |
 | 7 | Sky Crane | Mantis S-64 | Precise placement | Planned |
 | 8 | Convoy Escort | Viper AH-6 | Combat and awareness | Planned |
 
@@ -60,7 +61,7 @@ Missions unlock in order. Best times and medals are saved in the browser's local
 
 ## Adding a level
 
-A level is a `LevelDef` in `src/levels/`: terrain config, buildings, pads, roads, crowds, scenery, optional sea and wind, and a `MissionDef` with an ordered list of objectives (`takeoff`, `hover`, `gates`, `land`, `rescue`, `deliver`, `hook`, `place`, `fill`, `protect`, `extinguish`). Add it to `CAMPAIGN` in `src/levels/index.ts`; `tests/levels.test.ts` checks the data automatically.
+A level is a `LevelDef` in `src/levels/`: terrain config, buildings, pads, roads, crowds, scenery, optional sea and wind, and a `MissionDef` with an ordered list of objectives (`takeoff`, `hover`, `gates`, `land`, `rescue`, `deliver`, `hook`, `place`, `fill`, `protect`, `extinguish`, `casualties`). Add it to `CAMPAIGN` in `src/levels/index.ts`; `tests/levels.test.ts` checks the data automatically.
 
 ## Wildfire
 
@@ -79,3 +80,16 @@ Grauhorn uses the `alpine` terrain kind: a valley rising to a ridge with spurs, 
 - **Weather:** a mission `weather` lowers the cloud base over time. Too long in cloud fails the mission, as does cloud reaching a site with survivors still waiting. Everything above the base fades into cloud via a shared shader uniform (`src/render/cloud.ts`).
 
 `tests/mountain.test.ts` covers these, plus the Grauhorn balance (loaded summit hovers are impossible, sites close top first).
+
+## Night Medevac
+
+Varrow uses the `city` terrain kind: level paved ground, parks and a river between embankment walls. `planCity` (`src/world/cityPlan.ts`) lays out a street grid split by the river, with bridges on some streets, and fills the blocks with lots whose buildings rise towards downtown: office towers, flats and terraced houses. Special sites (hospitals, stadium, the scenes) are reserved and placed by hand.
+
+- **Calls:** a `casualties` objective runs the queue in `src/missions/Medevac.ts`. Calls come in on a schedule, or a few seconds early when the crew is idle, so they overlap. One casualty fits in the cabin: land inside the cordon to load them, then on the roof pad of the hospital that treats them (trauma or burns). A casualty whose timer runs out before the handover begins is lost and the mission fails. Handovers inside the golden window count towards the result, and gold needs every one.
+- **Night:** dim moonlight and procedural lit windows (`src/render/windows.ts`), sodium street lamps with pools of light, lit pads with edge lights, a floodlit stadium, and red obstruction lights on cranes, masts, pylons and the tallest towers (`src/render/night.ts`). Glows are additive points sized in metres; there is no bloom pass.
+- **Searchlight:** a shadow-casting spot light with a visible beam (`src/render/Searchlight.ts`). In auto mode it swings onto the scene or hospital being flown to once within range, otherwise it lights the ground ahead. F cycles auto, locked ahead and off. It is keyboard-controlled, in line with the keyboard-only controls.
+- **Traffic:** cars drive loops along each road and keep left (`src/world/Traffic.ts`), keeping their distance and queuing behind a scene that closes the road.
+- **Wires:** cableways now come in three kinds: cable car, power lines and crane jibs. Any of them in the rotor is fatal, and a WIRES warning shows the direction and gap as one gets close.
+- **Wind between towers:** with `wind.channel`, wind along a street between tall buildings speeds up and gusts, and drops but churns in a tower's lee.
+
+`tests/medevac.test.ts` covers the casualty queue and objective, traffic, city wind, wires, the city layout and the Varrow balance (scenes clear of obstacles and wires, both hospitals used, calls that overlap but can be answered in time).

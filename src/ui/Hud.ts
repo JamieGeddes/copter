@@ -39,13 +39,25 @@ export interface MountainHudState {
   exposure: number;
 }
 
+export interface CallHudItem {
+  label: string;
+  severity: 'critical' | 'serious';
+  care: 'trauma' | 'burns';
+  /** Name of the hospital the casualty needs. */
+  hospital: string;
+  timeLeft: number;
+  /** Still inside the golden hour. */
+  golden: boolean;
+  state: 'waiting' | 'loading' | 'aboard' | 'handover';
+}
+
 export interface Waypoint {
   label: string;
   /** Screen position in CSS pixels. */
   x: number;
   y: number;
   onScreen: boolean;
-  kind: 'pad' | 'survivor' | 'gate' | 'area' | 'fuel' | 'cargo' | 'water' | 'fire' | 'town';
+  kind: 'pad' | 'survivor' | 'gate' | 'area' | 'fuel' | 'cargo' | 'water' | 'fire' | 'town' | 'call';
 }
 
 const el = <K extends keyof HTMLElementTagNameMap>(tag: K, className: string, parent?: HTMLElement, text?: string) => {
@@ -111,12 +123,16 @@ export class Hud {
   private readonly winchText: HTMLElement;
   private readonly winchFill: HTMLElement;
   private readonly markers: HTMLElement;
+  private readonly calls: HTMLElement;
+  private readonly callList: HTMLElement;
+  private readonly lightText: HTMLElement;
+  private callsKey = '';
   private toastTimer = 0;
   private markerEls: HTMLElement[] = [];
   private objectivesKey = '';
 
-  constructor(container: HTMLElement, aircraft: { name: string; role: string }, levelName: string) {
-    this.root = el('div', 'hud', container);
+  constructor(container: HTMLElement, aircraft: { name: string; role: string }, levelName: string, options: { night?: boolean } = {}) {
+    this.root = el('div', options.night ? 'hud night' : 'hud', container);
     el('div', 'vignette', this.root);
     this.haze = el('div', 'haze', this.root);
     this.fog = el('div', 'haze fog', this.root);
@@ -197,11 +213,18 @@ export class Hud {
     this.terrainArrow = el('span', 'terrain-arrow', this.terrain, '↑');
     this.terrainText = el('span', 'terrain-text', this.terrain);
 
+    this.calls = el('div', 'panel calls', this.root);
+    el('div', 'calls-head', this.calls, 'Emergency calls');
+    this.callList = el('div', 'call-list', this.calls);
+    this.lightText = el('div', 'light-text', this.calls);
+    this.calls.style.display = 'none';
+
     this.toast = el('div', 'toast', this.root);
     this.markers = el('div', 'markers', this.root);
 
     this.help = el('div', 'panel help', this.root);
-    for (const [keys, action] of CONTROLS) {
+    const controls = options.night ? [...CONTROLS.slice(0, 4), ['F', 'Searchlight'] as [string, string], ...CONTROLS.slice(4)] : CONTROLS;
+    for (const [keys, action] of controls) {
       const row = el('div', 'help-row', this.help);
       el('span', 'keys', row, keys);
       el('span', 'action', row, action);
@@ -309,12 +332,49 @@ export class Hud {
    * Terrain proximity warning: `angle` is the screen direction of the nearest rock in radians
    * clockwise from up, `distance` the gap at the blade tips. Pass undefined to clear it.
    */
-  updateTerrain(warning: { angle: number; distance: number } | undefined): void {
+  updateTerrain(warning: { angle: number; distance: number; label?: string } | undefined): void {
     this.terrain.classList.toggle('show', !!warning);
     if (!warning) return;
     this.terrain.classList.toggle('close', warning.distance < 4);
     this.terrainArrow.style.transform = `rotate(${warning.angle}rad)`;
-    this.terrainText.textContent = `TERRAIN ${Math.max(0, warning.distance).toFixed(0)} m`;
+    this.terrainText.textContent = `${warning.label ?? 'TERRAIN'} ${Math.max(0, warning.distance).toFixed(0)} m`;
+  }
+
+  /** Screen area of the calls panel, which edge markers keep clear of. */
+  get callsBottom(): number {
+    return this.calls.style.display === 'none' ? 0 : this.calls.getBoundingClientRect().bottom;
+  }
+
+  /**
+   * Emergency calls in progress, with each casualty's timer, and the searchlight mode. Pass
+   * undefined to hide the panel.
+   */
+  updateCalls(items: CallHudItem[] | undefined, searchlight = ''): void {
+    this.calls.style.display = items ? 'block' : 'none';
+    if (!items) return;
+    const key = items.map((c) => `${c.label}|${c.state}`).join();
+    if (key !== this.callsKey) {
+      this.callsKey = key;
+      this.callList.replaceChildren();
+      if (!items.length) el('div', 'call-idle', this.callList, 'Standing by…');
+      for (const c of items) {
+        const row = el('div', `call ${c.severity}${c.state === 'aboard' || c.state === 'handover' ? ' aboard' : ''}`, this.callList);
+        const top = el('div', 'call-top', row);
+        el('span', 'call-label', top, c.label);
+        el('span', 'call-timer', top);
+        const where =
+          c.state === 'aboard' ? `Aboard → ${c.hospital}` : c.state === 'handover' ? 'Handing over…' : c.state === 'loading' ? 'Loading…' : 'At the scene';
+        el('div', 'call-sub', row, `${c.severity} · ${c.care} · ${where}`);
+      }
+    }
+    const timers = this.callList.querySelectorAll<HTMLElement>('.call-timer');
+    items.forEach((c, i) => {
+      const t = timers[i];
+      if (!t) return;
+      t.textContent = formatTime(Math.max(0, c.timeLeft));
+      t.className = `call-timer ${c.timeLeft < 30 ? 'urgent' : c.golden ? 'golden' : 'late'}`;
+    });
+    this.lightText.textContent = searchlight;
   }
 
   /** Cloud fog over the view, 0 (clear) to 1 (white-out). */

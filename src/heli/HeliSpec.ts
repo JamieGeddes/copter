@@ -238,10 +238,44 @@ export const CHAMOIS: HeliSpec = {
   hoverThrust: 1.34,
 };
 
+/**
+ * Twin-engine air ambulance: the fastest and most agile aircraft yet, with a shrouded tail fan
+ * and a steerable searchlight. One stretcher in the cabin.
+ */
+export const LIFELINE: HeliSpec = {
+  id: 'lifeline',
+  name: 'Lifeline EC-1',
+  role: 'Air ambulance',
+  maxSpeed: 62,
+  acceleration: 14,
+  cyclicResponse: 4,
+  brakeAssist: 1.7,
+  cushionSink: 1.3,
+  cushionGain: 0.9,
+  windFactor: 0.9,
+  maxTilt: 0.3,
+  climbRate: 9,
+  collectiveResponse: 2.8,
+  yawRate: 2.4,
+  spoolRate: 0.34,
+  fuelEndurance: 900,
+  safeSinkRate: 2.5,
+  safeGroundSpeed: 4,
+  crashSpeed: 9,
+  mass: 2900,
+  bladeRate: 16,
+  bodyRadius: 1.8,
+  bodyHeight: 3.4,
+  rotorRadius: 5.2,
+  rotorHeight: 3.5,
+  maxAltitude: 160,
+};
+
 export const AIRCRAFT: Record<string, HeliSpec> = {
   [KESTREL.id]: KESTREL,
   [ALBATROSS.id]: ALBATROSS,
   [HAULER.id]: HAULER,
   [BUCKETEER.id]: BUCKETEER,
   [CHAMOIS.id]: CHAMOIS,
+  [LIFELINE.id]: LIFELINE,
 };

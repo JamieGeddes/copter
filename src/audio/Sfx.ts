@@ -1,6 +1,6 @@
 import { RotorAudio } from './RotorAudio';
 
-export type SfxName = 'gate' | 'objective' | 'complete' | 'fail' | 'attach' | 'rescued' | 'warning' | 'move' | 'select' | 'unload' | 'proximity';
+export type SfxName = 'gate' | 'objective' | 'complete' | 'fail' | 'attach' | 'rescued' | 'warning' | 'move' | 'select' | 'unload' | 'proximity' | 'call';
 
 type Note = [frequency: number, start: number, duration: number];
 
@@ -20,6 +20,8 @@ const SEQUENCES: Record<SfxName, { notes: Note[]; type: OscillatorType; gain: nu
   select: { notes: [[660, 0, 0.05], [990, 0.05, 0.08]], type: 'square', gain: 0.05 },
   unload: { notes: [[587, 0, 0.08], [880, 0.08, 0.12]], type: 'triangle', gain: 0.1 },
   proximity: { notes: [[1480, 0, 0.06]], type: 'square', gain: 0.045 },
+  // Two-tone pager for a new emergency call.
+  call: { notes: [[1175, 0, 0.12], [880, 0.14, 0.12], [1175, 0.28, 0.12], [880, 0.42, 0.18]], type: 'square', gain: 0.06 },
 };
 
 /** Short chiptune cues plus a looping winch motor whine. */

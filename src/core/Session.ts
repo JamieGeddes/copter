@@ -11,6 +11,7 @@ import { Boarding, BoardingHint } from '../missions/Boarding';
 import { Bucket, BucketEnv, BucketHint, Spray } from '../missions/Bucket';
 import { CargoEvent, CargoHint, CargoSystem } from '../missions/Cargo';
 import { medalFor, Medal } from '../missions/medals';
+import { MedevacEvent, MedevacHint } from '../missions/Medevac';
 import { MissionEvent, MissionRunner, MissionSnapshot } from '../missions/MissionRunner';
 import { SurvivorDef } from '../missions/types';
 import { Winch, WinchHint } from '../missions/Winch';
@@ -20,17 +21,22 @@ import { CLEAR_SKY, cloudUniforms } from '../render/cloud';
 import { FireVisuals } from '../render/FireVisuals';
 import { CrowdMesh } from '../render/CrowdMesh';
 import { screenToWorld } from '../render/isoMath';
+import { MedevacVisuals } from '../render/MedevacVisuals';
 import { MissionVisuals } from '../render/MissionVisuals';
+import { createNightLights, Glows, NightLights } from '../render/night';
+import { Searchlight } from '../render/Searchlight';
+import { TrafficVisuals } from '../render/TrafficVisuals';
 import { createProps } from '../render/props';
 import { Stage } from '../render/Stage';
 import { createTerrainMesh } from '../render/TerrainMesh';
 import { createWater, Water } from '../render/WaterMesh';
-import { Hud, Waypoint } from '../ui/Hud';
+import { CallHudItem, Hud, Waypoint } from '../ui/Hud';
 import { clamp, damp } from './math';
 import { CrowdSim } from '../world/CrowdSim';
 import { FireGrid } from '../world/FireGrid';
 import { createFireGrid } from '../world/fuel';
 import { LevelDef } from '../world/level';
+import { Traffic } from '../world/Traffic';
 import { LocalWind } from '../world/Wind';
 import { World } from '../world/World';
 
@@ -58,6 +64,17 @@ const BOARDING_TEXT: Record<BoardingHint, string> = {
 
 /** Terrain warning starts beeping within this gap at the blade tips. */
 const PROXIMITY_RANGE = 12;
+/** Wire warning range, beyond the blade tips. */
+const WIRE_RANGE = 30;
+
+const MEDEVAC_TEXT: Record<Exclude<MedevacHint, 'none'>, string> = {
+  loading: 'Paramedics loading…',
+  handover: 'Handing over…',
+  wrongHospital: 'Wrong hospital',
+  occupied: 'Cabin occupied: deliver this casualty first',
+};
+
+const WIRE_STRIKE = { cable: 'Wire strike on the cable car', power: 'Flew into power lines', jib: 'Struck a crane jib' } as const;
 
 const BUCKET_TEXT: Record<BucketHint, string> = {
   empty: 'Bucket empty: dip it in the lake',
@@ -157,6 +174,17 @@ export class Session {
   private gatesFlown = 0;
   private landings = 0;
   private demoAngle = 0;
+  /** Night city: lights, traffic, the searchlight and emergency scenes. */
+  private readonly night: boolean;
+  private readonly nightLights?: NightLights;
+  private readonly traffic?: Traffic;
+  private readonly trafficVisuals?: TrafficVisuals;
+  private readonly closures = new Map<string, number>();
+  private readonly searchlight?: Searchlight;
+  private readonly heliGlows?: Glows;
+  private readonly medevacVisuals?: MedevacVisuals;
+  private readonly lightPos = new Vector3();
+  private sceneFireBudget = 0;
 
   constructor(stage: Stage, container: HTMLElement, level: LevelDef, audio: RotorAudio, sfx: Sfx) {
     this.stage = stage;
@@ -217,7 +245,30 @@ export class Session {
     }
     this.visuals = new MissionVisuals(scene, this.world, this.runner, this.heli.visual, this.winch, this.boarding);
 
-    const dustColour = { desert: 0xd9ad74, coast: 0xb8ab88, floodplain: 0xa89a74, forest: 0x9a8f6a, alpine: 0xa49c8c }[level.terrain.kind];
+    this.night = level.terrain.kind === 'city';
+    if (this.night) {
+      const calls = level.mission.casualties ?? [];
+      this.nightLights = createNightLights(this.world, calls);
+      scene.add(this.nightLights.group);
+      this.traffic = new Traffic(level.roads, level.motorways ?? [], level.terrain.seed);
+      // Scenes on a road close it to traffic while the crews are there.
+      for (const c of calls) {
+        if (this.world.distanceToRoad(c.x, c.z) < c.radius) this.closures.set(c.id, this.traffic.addClosure(c.x, c.z, c.radius + 12));
+      }
+      this.trafficVisuals = new TrafficVisuals(this.traffic, this.world);
+      scene.add(this.trafficVisuals.group);
+    }
+    if (this.night && this.heli.visual.searchlight) this.searchlight = new Searchlight(scene);
+    if (this.night && this.heli.visual.lights?.length) {
+      this.heliGlows = new Glows();
+      for (const l of this.heli.visual.lights) {
+        this.heliGlows.add(0, 0, 0, l.size, l.colour, l.kind === 'strobe' ? 2 : l.kind === 'beacon' ? 1 : 0, l.kind === 'beacon' ? 0.5 : 0);
+      }
+      scene.add(this.heliGlows.build().points);
+    }
+    if (this.runner.medevac) this.medevacVisuals = new MedevacVisuals(scene, this.world, this.runner.medevac, this.heli.visual);
+
+    const dustColour = { desert: 0xd9ad74, coast: 0xb8ab88, floodplain: 0xa89a74, forest: 0x9a8f6a, alpine: 0xa49c8c, city: 0x8a8884 }[level.terrain.kind];
     this.dust = new Particles({ capacity: 900, colour: dustColour, opacity: 0.55, drag: 1.6, gravity: 0.4 });
     this.spray = new Particles({ capacity: 900, colour: 0xe4eef0, opacity: 0.32, drag: 1.8, gravity: -1.5 });
     this.smoke = new Particles({ capacity: 500, colour: 0x3a342f, opacity: 0.6, drag: 0.6, gravity: 2.2 });
@@ -226,7 +277,7 @@ export class Session {
     this.cloud = new Particles({ capacity: 500, colour: 0xeef2f5, opacity: 0.45, drag: 0.2, gravity: 0 });
     scene.add(this.dust.points, this.spray.points, this.smoke.points, this.fire.points, this.flare.points, this.cloud.points);
 
-    this.hud = new Hud(container, spec, level.name);
+    this.hud = new Hud(container, spec, level.name, { night: this.night });
     this.hud.setVisible(false);
 
     const pad = this.world.pad(level.spawnPad);
@@ -242,6 +293,7 @@ export class Session {
 
   dispose(): void {
     cloudUniforms.cloudBase.value = CLEAR_SKY;
+    this.searchlight?.light.dispose();
     this.hud.destroy();
     this.sfx.setWinch(0);
   }
@@ -277,8 +329,10 @@ export class Session {
       this.stepBucket();
     }
     if (this.blaze) this.stepFire(dt);
+    this.stepTraffic(dt);
     this.checkCables();
     this.visuals.setVisible(true);
+    this.medevacVisuals?.setVisible(true);
     this.cargoVisuals?.setVisible(true);
     this.bucketVisuals?.setVisible(true);
     this.sync(dt);
@@ -311,12 +365,87 @@ export class Session {
     }
   }
 
-  /** Flying the rotor into a cable car wire is fatal. */
+  /** Flying the rotor into a wire (cable car, power line or crane jib) is fatal. */
   private checkCables(): void {
     const f = this.heli.flight;
     if (!this.world.cables.length || f.destroyed || f.landed) return;
-    if (this.world.cableStrike(f.x, f.y + f.spec.rotorHeight, f.z, f.spec.rotorRadius)) {
-      for (const e of f.wreck('Wire strike on the cable car')) this.onFlightEvent(e);
+    const wire = this.world.wireStrike(f.x, f.y + f.spec.rotorHeight, f.z, f.spec.rotorRadius);
+    if (wire) {
+      for (const e of f.wreck(WIRE_STRIKE[wire.kind])) this.onFlightEvent(e);
+    }
+  }
+
+  /** Moves the traffic, holding it back from scenes on the road while the crews are there. */
+  private stepTraffic(dt: number): void {
+    const t = this.traffic;
+    if (!t) return;
+    const m = this.runner.medevac;
+    for (const [id, i] of this.closures) {
+      const state = m?.status(id).state;
+      t.closures[i].active = state === 'waiting' || state === 'loading' || state === 'aboard';
+    }
+    t.update(dt);
+  }
+
+  /** The searchlight key: auto, locked ahead, or off. */
+  cycleSearchlight(): void {
+    const s = this.searchlight;
+    if (!s) return;
+    const mode = s.cycle();
+    this.hud.message(mode === 'auto' ? 'Searchlight: auto' : mode === 'ahead' ? 'Searchlight: locked ahead' : 'Searchlight off', 1.4);
+  }
+
+  /** Where the searchlight should look in auto mode: the hospital, or the most urgent scene. */
+  private lightTarget(): { x: number; y: number; z: number } | undefined {
+    const m = this.runner.medevac;
+    if (!m) return undefined;
+    const aboard = m.aboard;
+    if (aboard) {
+      const pad = this.world.pad(aboard.def.hospital);
+      return { x: pad.x, y: pad.top, z: pad.z };
+    }
+    const f = this.heli.flight;
+    let best: { x: number; y: number; z: number } | undefined;
+    let bestD = Infinity;
+    for (const c of m.active) {
+      const d = Math.hypot(c.def.x - f.x, c.def.z - f.z);
+      if (d < bestD) {
+        bestD = d;
+        best = { x: c.def.x, y: this.world.groundHeightAt(c.def.x, c.def.z), z: c.def.z };
+      }
+    }
+    return best;
+  }
+
+  /** Night visuals: city lights, traffic, the searchlight, the aircraft's lights and the scenes. */
+  private syncNight(dt: number): void {
+    if (!this.night) return;
+    const ppm = this.stage.pixelsPerMetre;
+    this.nightLights?.update(this.time, ppm);
+    this.trafficVisuals?.update();
+    this.medevacVisuals?.update(this.time, ppm);
+    const f = this.heli.flight;
+    const v = this.heli.visual;
+    if (this.searchlight && v.searchlight) {
+      v.root.updateMatrixWorld();
+      v.searchlight.getWorldPosition(this.lightPos);
+      this.searchlight.update(dt, {
+        origin: this.lightPos,
+        heading: f.heading,
+        vx: f.vx,
+        vz: f.vz,
+        landed: f.landed,
+        target: f.destroyed ? undefined : this.lightTarget(),
+        groundHeightAt: (x, z) => this.world.groundHeightAt(x, z),
+      });
+      if (f.destroyed) this.searchlight.mode = 'off';
+    }
+    if (this.heliGlows && v.lights) {
+      v.lights.forEach((l, i) => {
+        l.object.getWorldPosition(this.lightPos);
+        this.heliGlows!.move(i, this.lightPos.x, f.destroyed ? -1000 : this.lightPos.y, this.lightPos.z);
+      });
+      this.heliGlows.update(this.time, ppm);
     }
   }
 
@@ -499,6 +628,7 @@ export class Session {
     this.visuals.setVisible(false);
     this.cargoVisuals?.setVisible(false);
     this.bucketVisuals?.setVisible(false);
+    this.medevacVisuals?.setVisible(false);
     const b = this.world.buildings;
     const cx = b.reduce((a, q) => a + q.x, 0) / Math.max(1, b.length);
     const cz = b.reduce((a, q) => a + q.z, 0) / Math.max(1, b.length);
@@ -541,6 +671,7 @@ export class Session {
       this.cargoVisuals.update(this.time, this.cargo, this.runner, this.hookWorld);
     }
     this.updateCloud(dt);
+    this.syncNight(dt);
     if (follow) {
       this.reliefTimer -= dt;
       if (this.reliefTimer <= 0) {
@@ -712,6 +843,9 @@ export class Session {
         this.sfx.play('warning');
         this.hud.message(`Cloud coming down over ${e.site}`, 3);
         break;
+      case 'casualty':
+        this.onCasualtyEvent(e.event);
+        break;
       case 'passengerUnloaded':
         this.sfx.play('unload');
         this.hud.message(
@@ -730,6 +864,32 @@ export class Session {
     }
   }
 
+  private onCasualtyEvent(e: MedevacEvent): void {
+    const m = this.runner.medevac!;
+    const c = m.status(e.id).def;
+    const hospital = this.world.pad(c.hospital).label;
+    switch (e.type) {
+      case 'call':
+        this.sfx.play('call');
+        this.hud.message(`New call: ${c.label} (${c.severity})`, 3.5);
+        break;
+      case 'loaded':
+        this.sfx.play('rescued');
+        this.hud.message(`Casualty aboard: fly to ${hospital}`, 3);
+        break;
+      case 'wrongHospital':
+        this.sfx.play('warning');
+        this.hud.message(`Wrong hospital: this ${c.care} casualty needs ${hospital}`, 3);
+        break;
+      case 'delivered':
+        this.sfx.play('unload');
+        this.hud.message(e.golden ? 'Handed over inside the golden hour' : 'Handed over', 2.5);
+        break;
+      case 'lost':
+        break;
+    }
+  }
+
   private finish(success: boolean, reason?: string): void {
     if (this.outcome) return;
     const f = this.heli.flight;
@@ -738,6 +898,11 @@ export class Session {
     if (this.gatesFlown) stats.push(['Gates', String(this.gatesFlown)]);
     if (this.level.mission.survivors) stats.push(['Rescued', `${this.runner.rescued.size} of ${this.level.mission.survivors.length}`]);
     if (this.rotorStrikes) stats.push(['Rotor strikes', String(this.rotorStrikes)]);
+    const m = this.runner.medevac;
+    if (m) {
+      stats.push(['Casualties', `${m.delivered} of ${m.casualties.length}`]);
+      stats.push(['Golden hour', `${m.golden} of ${m.casualties.length}`]);
+    }
     if (this.cargo) stats.push(['Cargo damage', `${Math.round(this.cargoDamage * 100)}%`]);
     if (this.blaze && this.bucket) {
       stats.push(['Fire area', `${(this.blaze.burnedArea / 10000).toFixed(1)} ha`]);
@@ -749,12 +914,15 @@ export class Session {
       }
     }
     stats.push(['Landings', String(this.landings)]);
+    let medal = success ? medalFor(time, Math.max(f.damage, this.cargoDamage), this.level.mission.medals) : undefined;
+    // Gold also needs every casualty in hospital inside the golden hour.
+    if (m && medal === 'gold' && m.golden < m.casualties.length) medal = 'silver';
     this.outcome = {
       success,
       reason,
       time,
       damage: Math.max(f.damage, this.cargoDamage),
-      medal: success ? medalFor(time, Math.max(f.damage, this.cargoDamage), this.level.mission.medals) : undefined,
+      medal,
       stats,
     };
   }
@@ -835,8 +1003,12 @@ export class Session {
       this.hud.updateWind(undefined, 0);
     }
     this.updateMountainHud(dt);
+    this.updateCallsHud();
+    const medevacAssist = this.medevacAssist();
     if (this.powerHint) {
       this.hud.updateAssist(this.powerHint, false, 0);
+    } else if (medevacAssist) {
+      this.hud.updateAssist(...medevacAssist);
     } else if (this.boarding && this.boarding.hint !== 'none' && (!this.winch || this.winch.hint === 'none')) {
       const b = this.boarding;
       this.hud.updateAssist(BOARDING_TEXT[b.hint], b.hint === 'boarding', b.walkingId ? b.progress : 0);
@@ -893,20 +1065,75 @@ export class Session {
     if (this.flightEnv.rotorStrike && !f.landed && !f.destroyed) {
       this.proximity = rotorProximity(f.spec, f.x, f.y, f.z, (x, z) => this.world.groundHeightAt(x, z), PROXIMITY_RANGE);
     }
-    const p = this.proximity;
+    let p: { distance: number; dirX: number; dirZ: number } | undefined = this.proximity;
+    let label = 'TERRAIN';
+    let range = PROXIMITY_RANGE;
+    // Wires near the rotor's height, on any level that has them.
+    if (!p && this.world.cables.length && !f.landed && !f.destroyed) {
+      p = this.world.nearestWire(f.x, f.y + f.spec.rotorHeight, f.z, f.spec.rotorRadius, WIRE_RANGE, 10);
+      label = 'WIRES';
+      range = WIRE_RANGE;
+    }
     if (p) {
       const b = this.stage.iso.basis;
       const angle = Math.atan2(p.dirX * b.rightX + p.dirZ * b.rightZ, p.dirX * b.upX + p.dirZ * b.upZ);
-      this.hud.updateTerrain({ angle, distance: p.distance });
+      this.hud.updateTerrain({ angle, distance: p.distance, label });
       this.beepTimer -= dt;
       if (this.beepTimer <= 0) {
         this.sfx.play('proximity');
-        this.beepTimer = 0.1 + (p.distance / PROXIMITY_RANGE) * 0.7;
+        this.beepTimer = 0.1 + (p.distance / range) * 0.7;
       }
     } else {
       this.hud.updateTerrain(undefined);
       this.beepTimer = 0;
     }
+  }
+
+  /** Calls in progress for the HUD panel. */
+  private updateCallsHud(): void {
+    const m = this.runner.medevac;
+    if (!m) {
+      this.hud.updateCalls(undefined);
+      return;
+    }
+    const items: CallHudItem[] = m.active.map((c) => ({
+      label: c.def.label,
+      severity: c.def.severity,
+      care: c.def.care,
+      hospital: this.world.pad(c.def.hospital).label,
+      timeLeft: m.timeLeft(c),
+      golden: m.isGolden(c),
+      state: c.state as CallHudItem['state'],
+    }));
+    const s = this.searchlight;
+    const light = s ? `Searchlight ${s.mode === 'auto' ? (s.tracking ? 'on target' : 'auto') : s.mode === 'ahead' ? 'locked ahead' : 'off'} · F` : '';
+    this.hud.updateCalls(this.runner.status === 'running' ? items : [], light);
+  }
+
+  /** Guidance for medevac pickups and handovers. */
+  private medevacAssist(): [string, boolean, number] | undefined {
+    const m = this.runner.medevac;
+    if (!m || this.runner.status !== 'running') return undefined;
+    const f = this.heli.flight;
+    const busy = m.casualties.find((c) => c.state === 'loading' || c.state === 'handover');
+    switch (m.hint) {
+      case 'loading':
+      case 'handover':
+        return [MEDEVAC_TEXT[m.hint], true, busy?.progress ?? 0];
+      case 'wrongHospital': {
+        const a = m.aboard;
+        return [a ? `Wrong hospital: needs ${this.world.pad(a.def.hospital).label}` : MEDEVAC_TEXT.wrongHospital, false, 0];
+      }
+      case 'occupied':
+        return [MEDEVAC_TEXT.occupied, false, 0];
+    }
+    if (m.aboard) return undefined;
+    // Near a scene: land inside the cordon.
+    for (const c of m.active) {
+      const d = Math.hypot(f.x - c.def.x, f.z - c.def.z);
+      if (d < c.def.radius * 3 && (!f.landed || d > c.def.radius)) return ['Land inside the cordon', false, 0];
+    }
+    return undefined;
   }
 
   /** Guidance for the water bucket. */
@@ -967,13 +1194,19 @@ export class Session {
       const s = Math.min((right - cx) / Math.abs(dx || 1), (bottom - cy) / Math.abs(dy || 1));
       sx = cx + dx * s;
       sy = cy + dy * s;
+      // Keep clear of the calls panel in the top left corner.
+      const panel = this.callsBottom;
+      if (panel && sx < 360 && sy < panel + 40) sy = panel + 40;
       const f = this.heli.flight;
       label = `${label}\n${Math.round(Math.hypot(x - f.x, z - f.z))} m`;
     }
     return { label, x: sx, y: sy, onScreen, kind };
   }
 
+  private callsBottom = 0;
+
   private waypoints(): Waypoint[] {
+    this.callsBottom = this.runner.medevac ? this.hud.callsBottom : 0;
     const out: Waypoint[] = [];
     const r = this.runner;
     if (r.status !== 'running') return out;
@@ -1007,6 +1240,13 @@ export class Session {
       const next = this.runner.activeCargo.map((id) => this.cargo!.item(id)).find((it) => !it.lost && this.cargo!.hooked !== it && !it.fixed);
       if (next && !this.cargo.hooked) out.push(this.project(next.x, next.y + next.def.h + 3, next.z, next.def.label, 'cargo'));
       if (placed && this.cargo.hooked) out.push(this.project(placed.x, this.world.groundHeightAt(placed.x, placed.z) + 6, placed.z, placed.label, 'pad'));
+    }
+    const m = r.medevac;
+    if (m && !m.aboard) {
+      for (const c of m.active) {
+        const label = c.def.label.split(/[:,]/)[0];
+        out.push(this.project(c.def.x, this.world.groundHeightAt(c.def.x, c.def.z) + 4, c.def.z, label, 'call'));
+      }
     }
     if (o?.kind === 'rescue' && r.capacityLeft > 0) {
       const waiting = this.visuals.waitingSurvivors().filter((s: SurvivorDef) => this.spotted.has(s.id));
@@ -1083,6 +1323,34 @@ export class Session {
           size0: 1.2,
           size1: 9 + Math.random() * 4,
           shade: 0.9 + Math.random() * 0.2,
+        });
+      }
+    }
+
+    // Flames and smoke from burning buildings at fire scenes, lit orange from below.
+    for (const c of this.runner.medevac?.active ?? []) {
+      const fire = c.def.fire;
+      if (!fire) continue;
+      this.sceneFireBudget += dt * 14;
+      const w = this.world.wind;
+      const base = this.world.groundHeightAt(fire.x, fire.z);
+      while (this.sceneFireBudget >= 1) {
+        this.sceneFireBudget -= 1;
+        const x = fire.x + (Math.random() - 0.5) * 7;
+        const z = fire.z + (Math.random() - 0.5) * 7;
+        this.fire.spawn({ x, y: base + 0.5, z, vx: 0, vy: 2 + Math.random() * 3, vz: 0, life: 0.5 + Math.random() * 0.5, size0: 3 + Math.random() * 2, size1: 1 });
+        const smoky = Math.random() < 0.5 ? this.flare : this.smoke;
+        smoky.spawn({
+          x,
+          y: base + 3 + Math.random() * 3,
+          z,
+          vx: (w?.x ?? 0) * 0.7,
+          vy: 3 + Math.random() * 2,
+          vz: (w?.z ?? 0) * 0.7,
+          life: 4 + Math.random() * 3,
+          size0: 3,
+          size1: 12 + Math.random() * 6,
+          shade: 0.7 + Math.random() * 0.4,
         });
       }
     }

@@ -130,6 +130,7 @@ export class App {
         if (kb.wasPressed('help')) this.session.hud.toggleHelp();
         if (kb.wasPressed('action')) this.session.action();
         if (kb.wasPressed('heightLine')) this.session.toggleHeightLine();
+        if (kb.wasPressed('searchlight')) this.session.cycleSearchlight();
         this.session.update(dt, axesFromKeys(kb.held));
         if (this.session.outcome) {
           this.screen = 'ending';

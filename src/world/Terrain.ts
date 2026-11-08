@@ -129,7 +129,33 @@ export interface AlpineConfig extends BaseTerrainConfig {
   treeLine: number;
 }
 
-export type TerrainConfig = DesertConfig | CoastConfig | FloodplainConfig | ForestConfig | AlpineConfig;
+/** A river through a city, along z = offset + amplitude * sin(x / wavelength), between embankments. */
+export interface CityRiver {
+  offset: number;
+  amplitude: number;
+  wavelength: number;
+  /** Half-width of the water between the embankment walls. */
+  halfWidth: number;
+  depth: number;
+}
+
+/**
+ * A flat city on paved ground, crossed by a walled river. Park and garden density is stored per
+ * vertex in `dune` and the river in `river`; `packed` marks paved ground.
+ */
+export interface CityConfig extends BaseTerrainConfig {
+  kind: 'city';
+  /** Height of the streets above the water. */
+  ground: number;
+  river: CityRiver;
+  /** Green spaces: parks, gardens and the river banks. */
+  parks: { x: number; z: number; w: number; d: number }[];
+}
+
+export type TerrainConfig = DesertConfig | CoastConfig | FloodplainConfig | ForestConfig | AlpineConfig | CityConfig;
+
+/** Centre line of a city river (z for a given x). */
+export const cityRiverZ = (r: CityRiver, x: number): number => r.offset + r.amplitude * Math.sin(x / r.wavelength);
 
 /** Centre line of a floodplain river (z for a given x). */
 export const floodRiverZ = (r: FloodRiver, x: number): number =>
@@ -195,7 +221,7 @@ export class Terrain {
 
   /** True for terrain kinds that store woodland density in `dune`. */
   get wooded(): boolean {
-    return this.kind === 'forest' || this.kind === 'alpine';
+    return this.kind === 'forest' || this.kind === 'alpine' || this.kind === 'city';
   }
 
   /** Woodland density (0 bare, 1 dense) at the vertex nearest a position; forests and mountains only. */
@@ -253,6 +279,7 @@ export class Terrain {
     if (cfg.kind === 'floodplain') return Terrain.generateFloodplain(cfg);
     if (cfg.kind === 'forest') return Terrain.generateForest(cfg);
     if (cfg.kind === 'alpine') return Terrain.generateAlpine(cfg);
+    if (cfg.kind === 'city') return Terrain.generateCity(cfg);
     return Terrain.generateDesert(cfg);
   }
 
@@ -443,6 +470,36 @@ export class Terrain {
       return { h, dune: canopy, river: ice, beach: 0 };
     };
     return Terrain.build(cfg, natural, noise, 'alpine');
+  }
+
+  /**
+   * Builds a city: level paved ground with a faint camber, green parks, and a river channel with
+   * near-vertical embankment walls. The edges rise slightly so the city fades into hills.
+   */
+  static generateCity(cfg: CityConfig): Terrain {
+    const noise = new Noise2D(cfg.seed);
+    const natural = (x: number, z: number) => {
+      const r = cfg.river;
+      const d = Math.abs(z - cityRiverZ(r, x));
+      let h = cfg.ground + noise.fbm(x / 400, z / 400, 2) * 0.6;
+      let park = 0;
+      for (const p of cfg.parks) {
+        const k = smoothstep(4, -2, Math.max(Math.abs(x - p.x) - p.w / 2, Math.abs(z - p.z) - p.d / 2));
+        park = Math.max(park, k);
+      }
+      h += park * noise.fbm(x / 30, z / 30, 2) * 0.4;
+      // Embankment walls drop almost straight into the water.
+      const water = smoothstep(r.halfWidth + 1.5, r.halfWidth - 1.5, d);
+      h = lerp(h, -r.depth, water);
+      const edgeDist = Math.max(Math.abs(x), Math.abs(z));
+      const edge = smoothstep(cfg.edgeStart, cfg.edgeStart + 110, edgeDist + noise.fbm(x / 70, z / 70, 3) * 25);
+      h = Math.max(h, edge * (cfg.ground + 30 + noise.fbm(x / 90, z / 90, 3) * 10));
+      return { h, dune: Math.max(park, edge), river: water, beach: 0 };
+    };
+    const t = Terrain.build(cfg, natural, noise, 'city');
+    // Streets and pavements everywhere outside the parks and the river.
+    for (let i = 0; i < t.packed.length; i++) t.packed[i] = Math.max(t.packed[i], (1 - t.dune[i]) * (1 - t.river[i]));
+    return t;
   }
 
   private static build(

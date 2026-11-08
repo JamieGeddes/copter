@@ -29,6 +29,8 @@ const LIGHTING: Record<TerrainKind, Lighting> = {
   floodplain: { background: 0x7a8a5c, sky: 0xeef2ee, ground: 0x8a9a6a, hemi: 1.2, sun: 0xfff2dc, sunIntensity: 2.2 },
   forest: { background: 0x4f6a3c, sky: 0xeaf0e4, ground: 0x6f7f4c, hemi: 1.1, sun: 0xffe8c4, sunIntensity: 2.0 },
   alpine: { background: 0x8b98a4, sky: 0xe8eef4, ground: 0x6f7a6a, hemi: 1.15, sun: 0xfff2e2, sunIntensity: 2.1 },
+  // Night: dim blue sky light and a cold moon; the city's own lights do the rest.
+  city: { background: 0x070c16, sky: 0x46578a, ground: 0x15161c, hemi: 0.55, sun: 0x9fb2e8, sunIntensity: 0.5 },
 };
 
 /** Frees GPU resources held by a scene. Shared materials are left alone. */

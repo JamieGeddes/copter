@@ -25,7 +25,7 @@ export interface Water {
   update(time: number): void;
 }
 
-export type WaterStyle = 'sea' | 'river' | 'lake';
+export type WaterStyle = 'sea' | 'river' | 'lake' | 'city';
 
 const STYLES: Record<WaterStyle, { shallow: string; mid: string; deep: string; flow: string; clarity: string }> = {
   sea: { shallow: '0.30, 0.66, 0.66', mid: '0.10, 0.42, 0.52', deep: '0.05, 0.24, 0.36', flow: '0.0, 0.0', clarity: '9.0' },
@@ -33,6 +33,8 @@ const STYLES: Record<WaterStyle, { shallow: string; mid: string; deep: string; f
   // Still, dark forest lake with a slow drift.
   lake: { shallow: '0.24, 0.45, 0.40', mid: '0.09, 0.30, 0.34', deep: '0.04, 0.17, 0.23', flow: '0.15, 0.05', clarity: '5.0' },
   river: { shallow: '0.30, 0.25, 0.14', mid: '0.21, 0.18, 0.10', deep: '0.15, 0.13, 0.07', flow: '1.6, 0.0', clarity: '2.5' },
+  // Dark city river between embankments, flowing slowly downstream (+x).
+  city: { shallow: '0.16, 0.22, 0.26', mid: '0.10, 0.15, 0.20', deep: '0.06, 0.10, 0.14', flow: '0.8, 0.0', clarity: '3.0' },
 };
 
 /** Animated water with depth-based colour, transparency over shallows and shoreline foam. */

@@ -141,6 +141,17 @@ describe.each(playable.map((c) => [c.id, c.level!] as const))('level %s', (_id, 
     }
   });
 
+  it('lists every casualty in a casualties objective and sends each to a hospital pad that exists', () => {
+    const calls = mission.casualties ?? [];
+    const o = mission.objectives.find((q) => q.kind === 'casualties');
+    if (!calls.length && !o) return;
+    expect(o && o.kind === 'casualties' ? [...o.casualties].sort() : []).toEqual(calls.map((c) => c.id).sort());
+    for (const c of calls) {
+      expect(world.pad(c.hospital).service).toBe(false);
+      expect(c.golden).toBeLessThan(c.timer);
+    }
+  });
+
   it('sets medal times inside any time limit', () => {
     expect(mission.medals.gold).toBeLessThan(mission.medals.silver);
     if (mission.timeLimit) expect(mission.medals.silver).toBeLessThan(mission.timeLimit);

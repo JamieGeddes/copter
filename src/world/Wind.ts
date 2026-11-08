@@ -13,6 +13,11 @@ export interface WindDef {
    * leaves the wind the same everywhere.
    */
   orographic?: number;
+  /**
+   * Strength of wind funnelled between tall buildings (city levels): streets between towers on
+   * both sides speed it up and gust, and the lee of a tower is sheltered but churning.
+   */
+  channel?: number;
 }
 
 /** Wind at a point: horizontal vector and rising air, all in m/s, with a 0..1 turbulence level. */

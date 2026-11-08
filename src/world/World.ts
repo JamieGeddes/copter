@@ -1,6 +1,6 @@
 import { clamp, createRng } from '../core/math';
 import { Bounds, pointInSolid, Solid } from './collision';
-import { BuildingDef, LevelDef, PadDef } from './level';
+import { BuildingDef, LevelDef, PadDef, WireKind } from './level';
 import { Terrain } from './Terrain';
 import { Noise2D } from './noise';
 import { LocalWind, Wind } from './Wind';
@@ -8,6 +8,17 @@ import { LocalWind, Wind } from './Wind';
 export const PAD_HEIGHT = 0.3;
 /** How far a cable car wire sags at mid-span, in metres. */
 export const CABLE_SAG = 3;
+/** Sag at mid-span and hazard thickness for each kind of wire. */
+export const WIRE_SAG: Record<WireKind, number> = { cable: CABLE_SAG, power: 5, jib: 0 };
+const WIRE_BAND: Record<WireKind, number> = { cable: 1, power: 1, jib: 1.6 };
+/** How far the outermost wire or the side of a jib lies from the span's centre line. */
+export const WIRE_SPREAD: Record<WireKind, number> = { cable: 2.6, power: 4.5, jib: 0.8 };
+/** Buildings at least this tall shelter and channel the wind in a city. */
+const TALL = 22;
+const WIND_CELL = 40;
+/** Half-widths of a road and a motorway, including verges or pavements. */
+export const ROAD_HALF = 6;
+export const MOTORWAY_HALF = 12;
 
 export interface PlacedBuilding extends BuildingDef {
   /** Ground height the building stands on. */
@@ -31,6 +42,7 @@ export interface CableSpan {
   bx: number;
   by: number;
   bz: number;
+  kind: WireKind;
 }
 
 export type ScatterKind = 'cactus' | 'boulder' | 'rock' | 'bush' | 'tree';
@@ -63,6 +75,8 @@ export class World {
   updraft = 0;
   private readonly landables: Solid[] = [];
   private readonly airNoise = new Noise2D(911);
+  /** Tall buildings by grid cell, for wind between towers. */
+  private readonly tallCells = new Map<number, Solid[]>();
 
   constructor(level: LevelDef, terrain: Terrain = Terrain.generate(level.terrain)) {
     this.level = level;
@@ -111,12 +125,24 @@ export class World {
     for (const way of level.cableways ?? []) {
       const tops = way.points.map((p) => {
         const b = this.buildings.find((q) => Math.hypot(q.x - p.x, q.z - p.z) < 1);
-        return { x: p.x, z: p.z, y: b ? b.base + b.h - 0.6 : terrain.heightAt(p.x, p.z) + 20 };
+        return { x: p.x, z: p.z, y: p.y ?? (b ? b.base + b.h - 0.6 : terrain.heightAt(p.x, p.z) + 20) };
       });
       for (let i = 0; i < tops.length - 1; i++) {
         const a = tops[i];
         const b = tops[i + 1];
-        this.cables.push({ ax: a.x, ay: a.y, az: a.z, bx: b.x, by: b.y, bz: b.z });
+        this.cables.push({ ax: a.x, ay: a.y, az: a.z, bx: b.x, by: b.y, bz: b.z, kind: way.kind ?? 'cable' });
+      }
+    }
+
+    for (const solid of this.solids) {
+      if (solid.top - terrain.heightAt((solid.minX + solid.maxX) / 2, (solid.minZ + solid.maxZ) / 2) < TALL) continue;
+      for (let cx = Math.floor(solid.minX / WIND_CELL); cx <= Math.floor(solid.maxX / WIND_CELL); cx++) {
+        for (let cz = Math.floor(solid.minZ / WIND_CELL); cz <= Math.floor(solid.maxZ / WIND_CELL); cz++) {
+          const key = cx * 4096 + cz;
+          const list = this.tallCells.get(key);
+          if (list) list.push(solid);
+          else this.tallCells.set(key, [solid]);
+        }
       }
     }
 
@@ -151,6 +177,7 @@ export class World {
   windAt(x: number, z: number, y: number): LocalWind {
     const w = this.wind;
     if (!w) return { x: 0, z: 0, up: 0, turbulence: 0 };
+    if (w.def.channel) return this.cityWind(x, z, y);
     const k = w.def.orographic ?? 0;
     if (!k) return { x: w.x, z: w.z, up: 0, turbulence: 0 };
     const t = this.terrain;
@@ -180,6 +207,47 @@ export class World {
       z: w.z * (1 - 0.5 * shelter) + n.noise(x / 30 - 17, time * 1.1 + z / 30) * churn,
       up: clamp(up, -6, 6),
       turbulence: clamp(turbulence, 0, 1),
+    };
+  }
+
+  /** A tall building standing above height `y` at a point, if any. */
+  private tallAt(x: number, z: number, y: number): boolean {
+    const list = this.tallCells.get(Math.floor(x / WIND_CELL) * 4096 + Math.floor(z / WIND_CELL));
+    return !!list?.some((s) => s.top > y && pointInSolid(x, z, s));
+  }
+
+  /**
+   * Wind among tall buildings. Below the rooftops, air funnelled down a street between towers on
+   * both sides speeds up and gusts; in the lee of a tower it drops and churns. Above the roofs it
+   * is the open wind.
+   */
+  private cityWind(x: number, z: number, y: number): LocalWind {
+    const w = this.wind!;
+    const k = w.def.channel ?? 0;
+    const speed = Math.max(0.1, w.speed);
+    const ux = w.x / speed;
+    const uz = w.z / speed;
+    // Gap between buildings either side, across the wind.
+    let left = Infinity;
+    let right = Infinity;
+    for (let d = 6; d <= 54; d += 6) {
+      if (left === Infinity && this.tallAt(x - uz * d, z + ux * d, y)) left = d;
+      if (right === Infinity && this.tallAt(x + uz * d, z - ux * d, y)) right = d;
+    }
+    let lee = 0;
+    for (const d of [10, 25, 45]) if (this.tallAt(x - ux * d, z - uz * d, y)) lee = Math.max(lee, 1 - d / 60);
+    const canyon = left < Infinity && right < Infinity ? clamp(1 - (left + right - 20) / 80, 0, 1) : 0;
+    const time = w.time;
+    const n = this.airNoise;
+    const gust = canyon * (0.6 + 0.4 * n.noise(time * 0.9 + x / 40, z / 40));
+    const factor = (1 + k * gust) * (1 - 0.6 * lee);
+    const turbulence = clamp(canyon * 0.6 + lee * 0.8, 0, 1);
+    const churn = turbulence * speed * 0.8;
+    return {
+      x: w.x * factor + n.noise(time * 1.4 + x / 25, z / 25) * churn,
+      z: w.z * factor + n.noise(x / 25 - 31, time * 1.4 + z / 25) * churn,
+      up: n.noise(time * 1.7 + x / 20, z / 20 + 70) * turbulence * 2,
+      turbulence,
     };
   }
 
@@ -213,22 +281,47 @@ export class World {
 
   /** Height of a cable span at a fraction `t` along it, including the sag. */
   static cableHeight(c: CableSpan, t: number): number {
-    return c.ay + (c.by - c.ay) * t - Math.sin(t * Math.PI) * CABLE_SAG;
+    return c.ay + (c.by - c.ay) * t - Math.sin(t * Math.PI) * WIRE_SAG[c.kind];
   }
 
   /**
    * True if a cable passes through a horizontal rotor disc of the given radius centred on a hub,
    * within `band` metres of the disc's height.
    */
-  cableStrike(x: number, hubY: number, z: number, radius: number, band = 1): boolean {
+  cableStrike(x: number, hubY: number, z: number, radius: number, band?: number): boolean {
+    return !!this.wireStrike(x, hubY, z, radius, band);
+  }
+
+  /** The wire passing through a rotor disc, as for `cableStrike`, if any. */
+  wireStrike(x: number, hubY: number, z: number, radius: number, band?: number): CableSpan | undefined {
     for (const c of this.cables) {
       const dx = c.bx - c.ax;
       const dz = c.bz - c.az;
       const t = clamp(((x - c.ax) * dx + (z - c.az) * dz) / (dx * dx + dz * dz), 0, 1);
-      if (Math.hypot(x - (c.ax + dx * t), z - (c.az + dz * t)) > radius) continue;
-      if (Math.abs(World.cableHeight(c, t) - hubY) < band) return true;
+      if (Math.hypot(x - (c.ax + dx * t), z - (c.az + dz * t)) > radius + WIRE_SPREAD[c.kind]) continue;
+      if (Math.abs(World.cableHeight(c, t) - hubY) < (band ?? WIRE_BAND[c.kind])) return c;
     }
-    return false;
+    return undefined;
+  }
+
+  /**
+   * Nearest wire to a point, for the wire warning: horizontal distance beyond `radius` and the
+   * direction to it. Only wires within `vertical` metres of height `y` count.
+   */
+  nearestWire(x: number, y: number, z: number, radius: number, range: number, vertical = 8): { distance: number; dirX: number; dirZ: number } | undefined {
+    let best: { distance: number; dirX: number; dirZ: number } | undefined;
+    for (const c of this.cables) {
+      const dx = c.bx - c.ax;
+      const dz = c.bz - c.az;
+      const t = clamp(((x - c.ax) * dx + (z - c.az) * dz) / (dx * dx + dz * dz), 0, 1);
+      const px = c.ax + dx * t - x;
+      const pz = c.az + dz * t - z;
+      const d = Math.hypot(px, pz);
+      const gap = d - radius - WIRE_SPREAD[c.kind];
+      if (gap > range || Math.abs(World.cableHeight(c, t) - y) > vertical) continue;
+      if (!best || gap < best.distance) best = { distance: Math.max(0, gap), dirX: d > 0.01 ? px / d : 0, dirZ: d > 0.01 ? pz / d : 1 };
+    }
+    return best;
   }
 
   /** True if a point is clear of buildings, pads, roads and designated clearings. */
@@ -244,14 +337,17 @@ export class World {
 
   distanceToRoad(x: number, z: number): number {
     let best = Infinity;
-    for (const road of this.level.roads) {
+    const motorways = this.level.motorways ?? [];
+    for (const road of [...this.level.roads, ...motorways]) {
+      // Motorways are about twice as wide, so measure from their edge as for a road.
+      const extra = motorways.includes(road) ? MOTORWAY_HALF - ROAD_HALF : 0;
       for (let i = 0; i < road.length - 1; i++) {
         const [ax, az] = road[i];
         const [bx, bz] = road[i + 1];
         const dx = bx - ax;
         const dz = bz - az;
         const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz)));
-        best = Math.min(best, Math.hypot(x - (ax + dx * t), z - (az + dz * t)));
+        best = Math.min(best, Math.hypot(x - (ax + dx * t), z - (az + dz * t)) - extra);
       }
     }
     return best;

@@ -93,6 +93,76 @@ canvas {
   font-size: 22px;
 }
 
+.hud.night .vignette {
+  background: radial-gradient(ellipse at 50% 45%, transparent 55%, rgba(4, 8, 20, 0.45) 100%);
+}
+
+.calls {
+  top: 112px;
+  left: 16px;
+  width: 320px;
+  font-size: 13px;
+}
+
+.calls-head {
+  font-weight: 800;
+  color: var(--amber);
+  margin-bottom: 6px;
+}
+
+.call {
+  padding: 5px 0 5px 8px;
+  border-left: 3px solid var(--amber);
+  margin-bottom: 4px;
+}
+
+.call.critical {
+  border-left-color: var(--red);
+}
+
+.call.aboard {
+  background: rgba(111, 224, 138, 0.12);
+}
+
+.call-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 700;
+}
+
+.call-sub {
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.call-timer.golden {
+  color: #8af0a0;
+}
+
+.call-timer.late {
+  color: var(--amber);
+}
+
+.call-timer.urgent {
+  color: var(--red);
+  animation: blink 0.6s steps(2) infinite;
+}
+
+.call-idle {
+  opacity: 0.7;
+}
+
+.light-text {
+  margin-top: 6px;
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+.marker.call {
+  color: #ff8a70;
+}
+
 .panel {
   position: absolute;
   background: var(--panel);

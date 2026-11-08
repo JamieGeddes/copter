@@ -151,6 +151,26 @@ const alpineColour = (c: Color, terrain: Terrain, i: number, x: number, z: numbe
   c.lerp(ICE, terrain.river[i] * 0.85);
 };
 
+const PAVING = new Color(0x7c7d80);
+const PAVING_DARK = new Color(0x66686c);
+const CITY_GRASS = new Color(0x5a7a44);
+const CITY_GRASS_DARK = new Color(0x46663a);
+const HILLS = new Color(0x2a3826);
+const EMBANKMENT = new Color(0x6c6660);
+const CITY_RIVERBED = new Color(0x2c3034);
+
+/** Paved streets and squares, green parks, stone embankments and wooded hills round the edge. */
+const cityColour = (c: Color, terrain: Terrain, i: number, x: number, z: number, h: number, noise: Noise2D): void => {
+  const n = noise.fbm(x / 60, z / 60, 3);
+  c.copy(PAVING).lerp(PAVING_DARK, clamp(0.5 + n, 0, 1) * 0.6);
+  const green = terrain.dune[i];
+  c.lerp(CITY_GRASS, green);
+  c.lerp(CITY_GRASS_DARK, green * clamp(noise.fbm(x / 25, z / 25, 2) + 0.3, 0, 1) * 0.6);
+  c.lerp(HILLS, smoothstep(8, 20, h));
+  c.lerp(EMBANKMENT, smoothstep(0.3, 0.6, terrain.slopeAt(x, z)) * (1 - smoothstep(8, 14, h)));
+  c.lerp(CITY_RIVERBED, smoothstep(0.5, -1.5, h));
+};
+
 /** Builds the terrain mesh with vertex colours and a world-space grain shader. */
 export const createTerrainMesh = (terrain: Terrain): Mesh => {
   const v = terrain.verts;
@@ -173,6 +193,7 @@ export const createTerrainMesh = (terrain: Terrain): Mesh => {
       else if (terrain.kind === 'floodplain') floodplainColour(c, terrain, i, x, z, h, noise);
       else if (terrain.kind === 'forest') forestColour(c, terrain, i, x, z, h, noise);
       else if (terrain.kind === 'alpine') alpineColour(c, terrain, i, x, z, h, noise);
+      else if (terrain.kind === 'city') cityColour(c, terrain, i, x, z, h, noise);
       else desertColour(c, terrain, i, x, z, h, noise);
       colours[i * 3] = c.r;
       colours[i * 3 + 1] = c.g;

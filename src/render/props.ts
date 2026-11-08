@@ -9,6 +9,7 @@ import {
   ExtrudeGeometry,
   Float32BufferAttribute,
   Group,
+  Vector3,
   IcosahedronGeometry,
   InstancedMesh,
   LineBasicMaterial,
@@ -23,8 +24,9 @@ import {
 } from 'three';
 import { createRng } from '../core/math';
 import { TerrainKind } from '../world/Terrain';
-import { CABLE_SAG, PlacedBuilding, PlacedPad, ScatterItem, World } from '../world/World';
+import { MOTORWAY_HALF, PlacedBuilding, PlacedPad, ScatterItem, WIRE_SAG, WIRE_SPREAD, World } from '../world/World';
 import { merge, part, propMaterial, rod, shade, smoothPropMaterial } from './geom';
+import { windowMaterial, windowed, WindowStyle } from './windows';
 
 const box = (w: number, h: number, d: number) => new BoxGeometry(w, h, d);
 const DARK_WINDOW = 0x3b3a40;
@@ -54,8 +56,27 @@ const gable = (span: number, rise: number, length: number): BufferGeometry => {
   return g;
 };
 
-const buildingParts = (b: PlacedBuilding, rng: () => number): BufferGeometry[] => {
+/** A lattice of four tapering legs with cross bracing, for pylons, masts and crane towers. */
+const lattice = (parts: BufferGeometry[], half: number, topHalf: number, h: number, colour: number, braces: number, thickness = 0.14) => {
+  for (const [lx, lz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+    parts.push(rod([lx * half, -SINK, lz * half], [lx * topHalf, h, lz * topHalf], thickness, colour));
+  }
+  for (let i = 1; i <= braces; i++) {
+    const f = i / (braces + 1);
+    const k = half + (topHalf - half) * f;
+    const y = h * f;
+    parts.push(part(box(k * 2, 0.1, 0.1), colour, { y, z: k }));
+    parts.push(part(box(k * 2, 0.1, 0.1), colour, { y, z: -k }));
+    parts.push(part(box(0.1, 0.1, k * 2), colour, { y, x: k }));
+    parts.push(part(box(0.1, 0.1, k * 2), colour, { y, x: -k }));
+  }
+};
+
+const buildingParts = (b: PlacedBuilding, rng: () => number, walls: BufferGeometry[], lit: boolean): BufferGeometry[] => {
   const parts: BufferGeometry[] = [];
+  /** A wall box with windows drawn by the window shader. */
+  const litWalls = (w: number, h: number, d: number, colour: Color | number, style: WindowStyle, t: { x?: number; z?: number; y?: number } = {}) =>
+    walls.push(windowed(part(box(w, h + SINK, d), colour, { x: t.x, z: t.z, y: (t.y ?? 0) + (h - SINK) / 2 }), style, (t.y ?? 0) + b.base + h, rng()));
   const colour = b.colour ?? 0xe0c8a8;
   const wall = shade(colour, 1);
   const roof = shade(colour, 0.88);
@@ -212,7 +233,9 @@ const buildingParts = (b: PlacedBuilding, rng: () => number): BufferGeometry[] =
       break;
     }
     case 'hospital': {
-      parts.push(part(box(w, h + SINK, d), wall, { y: (h - SINK) / 2 }));
+      // At night the wards show lit windows.
+      if (lit) litWalls(w, h, d, wall, 'flats');
+      else parts.push(part(box(w, h + SINK, d), wall, { y: (h - SINK) / 2 }));
       parts.push(part(box(w - 0.6, 0.1, d - 0.6), 0xc9c6c0, { y: h + 0.05 }));
       parapet(parts, w, d, h, wall);
       for (const fy of [0.3, 0.68]) {
@@ -307,6 +330,110 @@ const buildingParts = (b: PlacedBuilding, rng: () => number): BufferGeometry[] =
       parts.push(part(new CylinderGeometry(1.4, 1.4, 0.4, 14), 0x8a9096, { y: h - 0.4 }));
       break;
     }
+    case 'tower': {
+      // Glass office tower: lit window bands, a plant room on the roof and a crown.
+      litWalls(w, h, d, wall, 'office');
+      parts.push(part(box(w - 0.6, 0.1, d - 0.6), shade(0x5a5e64, 1), { y: h + 0.05 }));
+      parapet(parts, w, d, h, shade(colour, 0.8));
+      parts.push(part(box(w * 0.45, 3, d * 0.4), shade(0x6a6e74, 1), { y: h + 1.5, x: -w * 0.12, z: d * 0.1 }));
+      if (rng() < 0.5) parts.push(part(box(w + 0.4, 1.2, d + 0.4), shade(colour, 0.7), { y: h - 0.6 }));
+      break;
+    }
+    case 'flats': {
+      litWalls(w, h, d, wall, 'flats');
+      parts.push(part(box(w - 0.6, 0.1, d - 0.6), shade(0x6a6560, 1), { y: h + 0.05 }));
+      parapet(parts, w, d, h, shade(colour, 0.9));
+      // Balconies up the front, and a lift motor room on the roof.
+      for (let y = 4; y < h - 2; y += 3) parts.push(part(box(w * 0.7, 0.2, 1.2), shade(colour, 0.75), { y, z: d / 2 + 0.6 }));
+      parts.push(part(box(4, 2.6, 4), shade(colour, 0.85), { y: h + 1.3, x: w / 4, z: -d / 4 }));
+      if (rng() < 0.6) parts.push(part(new CylinderGeometry(0.8, 0.8, 1.6, 8), 0x9a9690, { y: h + 0.8, x: -w / 4, z: d / 5 }));
+      break;
+    }
+    case 'terrace': {
+      // Terraced houses with a pitched slate roof along the longer side.
+      litWalls(w, h, d, wall, 'houses');
+      const along = w >= d;
+      const span = along ? d : w;
+      const length = along ? w : d;
+      const roofH = span * 0.32;
+      parts.push(part(gable(span, roofH, length), wall, { y: h, ry: along ? 0 : Math.PI / 2 }));
+      const pitch = Math.atan2(roofH, span / 2);
+      const slab = Math.hypot(roofH, span / 2) + 0.3;
+      for (const side of [-1, 1]) {
+        parts.push(
+          part(along ? box(length + 0.4, 0.2, slab) : box(slab, 0.2, length + 0.4), 0x40444c, {
+            y: h + roofH / 2 + 0.1,
+            z: along ? (side * span) / 4 : 0,
+            x: along ? 0 : (side * span) / 4,
+            rx: along ? side * pitch : 0,
+            rz: along ? 0 : -side * pitch,
+          }),
+        );
+      }
+      for (let i = -length / 2 + 4; i < length / 2 - 2; i += 6) {
+        parts.push(part(box(0.7, 1.4, 0.7), 0x6a5a4e, along ? { x: i, y: h + roofH * 0.7 } : { z: i, y: h + roofH * 0.7 }));
+      }
+      break;
+    }
+    case 'warehouse': {
+      parts.push(part(box(w, h + SINK, d), wall, { y: (h - SINK) / 2 }));
+      parts.push(part(box(w + 0.4, 0.5, d + 0.4), shade(colour, 0.8), { y: h + 0.1 }));
+      parts.push(part(box(w, 1.2, d * 0.6), shade(colour, 0.9), { y: h + 0.8, rx: 0 }));
+      for (let x = -w / 2 + 6; x < w / 2 - 3; x += 12) parts.push(part(box(5, 5, 0.12), 0x4a4e54, { x, y: 2.5, z: d / 2 + 0.05 }));
+      break;
+    }
+    case 'stand': {
+      // Back wall, raked seating falling towards the pitch (+z) and a cantilevered roof.
+      parts.push(part(box(w, h + SINK, 2), wall, { y: (h - SINK) / 2, z: -d / 2 + 1 }));
+      const rake = Math.atan2(h - 2, d - 3);
+      const len = Math.hypot(h - 2, d - 3);
+      parts.push(part(box(w - 1, 0.8, len), 0x3a5a8a, { y: h / 2, z: 0, rx: rake }));
+      parts.push(part(box(w - 1, h * 0.5 + SINK, d - 4), shade(colour, 0.8), { y: (h * 0.5 - SINK) / 2, z: -1 }));
+      // Roof over the back rows only, so the seating shows from above.
+      parts.push(part(box(w, 0.4, d * 0.4), shade(0xb8bcc0, 1), { y: h + 3, z: -d / 2 + d * 0.2 }));
+      for (let x = -w / 2 + 2; x <= w / 2 - 2; x += Math.max(8, w / 8)) parts.push(rod([x, h, -d / 2 + 1], [x, h + 3, -d / 2 + 1], 0.2, 0x6a6e74));
+      for (const side of [-1, 1]) parts.push(part(box(1, h + SINK, d), wall, { x: (side * (w - 1)) / 2, y: (h - SINK) / 2 }));
+      break;
+    }
+    case 'floodlight': {
+      parts.push(part(new CylinderGeometry(0.45, 0.8, h + SINK, 8), 0x8a9096, { y: (h - SINK) / 2 }));
+      parts.push(part(box(6, 3.2, 0.6), 0x3a3d42, { y: h + 1.2, rx: 0.5 }));
+      for (let i = -2; i <= 2; i++) for (const r of [0.4, 1.6]) parts.push(part(box(0.9, 0.9, 0.1), 0xfff8e0, { x: i * 1.1, y: h + 0.2 + r, z: 0.36 - r * 0.25, rx: 0.5 }));
+      break;
+    }
+    case 'bridge': {
+      // Deck with parapets on piers standing in the river.
+      parts.push(part(box(w, 1.4, d), shade(colour, 1), { y: h - 0.7 }));
+      for (const side of [-1, 1]) {
+        parts.push(part(box(0.5, 1.1, d), shade(colour, 1.15), { x: (side * (w - 0.5)) / 2, y: h + 0.55 }));
+      }
+      // The deck's base is on the banks, so the piers reach down past it to the riverbed.
+      for (const pz of [-d / 5, d / 5]) parts.push(part(box(w * 0.6, 12, 3), shade(colour, 0.85), { y: h - 7, z: pz }));
+      break;
+    }
+    case 'crane': {
+      // Yellow lattice mast with the operator's cab and slewing ring; the jib is drawn with the wires.
+      lattice(parts, 1.1, 1.1, h - 3, 0xe0b020, Math.floor(h / 4), 0.12);
+      parts.push(part(box(2.8, 1, 2.8), 0xe0b020, { y: h - 2.5 }));
+      parts.push(part(box(2, 2, 2.2), 0xd8d4cc, { y: h - 1, x: 1.6 }));
+      parts.push(part(box(1.4, 3, 1.4), 0xe0b020, { y: h + 1.5 }));
+      break;
+    }
+    case 'mast': {
+      // Thin aerial mast in red and white bands.
+      const bands = Math.max(3, Math.floor(h / 4));
+      for (let i = 0; i < bands; i++) {
+        const y0 = (h * i) / bands;
+        parts.push(part(new CylinderGeometry(0.25, 0.3, h / bands, 6), i % 2 ? 0xf2efe8 : 0xc8392b, { y: y0 + h / bands / 2 }));
+      }
+      break;
+    }
+    case 'powerPylon': {
+      lattice(parts, w / 2, 0.6, h, 0x9aa0a6, 4, 0.16);
+      for (const y of [h - 0.5, h - 5]) parts.push(part(box(0.3, 0.3, 9), 0x9aa0a6, { y }));
+      parts.push(part(new ConeGeometry(0.8, 3, 4), 0x9aa0a6, { y: h + 1.5, ry: Math.PI / 4 }));
+      break;
+    }
     case 'tank': {
       parts.push(part(new CylinderGeometry(w / 2, w / 2, h + SINK, 14), wall, { y: (h - SINK) / 2 }));
       parts.push(part(new SphereGeometry(w / 2, 14, 6, 0, Math.PI * 2, 0, Math.PI / 2), shade(colour, 0.9), { y: h, sy: 0.35 }));
@@ -317,23 +444,31 @@ const buildingParts = (b: PlacedBuilding, rng: () => number): BufferGeometry[] =
   return parts;
 };
 
-/** Merges all buildings into a single mesh. */
-const createBuildings = (world: World): Mesh => {
+/** Merges all buildings into a single mesh, plus one for walls with lit windows. */
+const createBuildings = (world: World): Group => {
   const rng = createRng(77);
   const all: BufferGeometry[] = [];
+  const walls: BufferGeometry[] = [];
   const m = new Matrix4();
   for (const b of world.buildings) {
-    const parts = buildingParts(b, rng);
+    const before = walls.length;
+    const parts = buildingParts(b, rng, walls, world.terrain.kind === 'city');
     m.makeRotationY(((b.turns ?? 0) * Math.PI) / 2).setPosition(b.x, b.base, b.z);
     for (const p of parts) {
       p.applyMatrix4(m);
       all.push(p);
     }
+    for (let i = before; i < walls.length; i++) walls[i].applyMatrix4(m);
   }
-  const mesh = new Mesh(merge(all), propMaterial);
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  return mesh;
+  const group = new Group();
+  for (const [list, material] of [[all, propMaterial], [walls, windowMaterial]] as const) {
+    if (!list.length) continue;
+    const mesh = new Mesh(merge(list), material);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    group.add(mesh);
+  }
+  return group;
 };
 
 const padTexture = (ring: string): CanvasTexture => {
@@ -478,6 +613,7 @@ const PALETTES = {
   floodplain: { boulder: 0x8c867a, rock: 0x9a958a, bush: [0x4f7232, 0x5f8238, 0x6d8a3c] as [number, number, number] },
   forest: { boulder: 0x7d786e, rock: 0x8a857a, bush: [0x3f5f2c, 0x4b6c30, 0x5c7a36] as [number, number, number] },
   alpine: { boulder: 0x84807a, rock: 0x928d86, bush: [0x46602e, 0x55703a, 0x667a40] as [number, number, number] },
+  city: { boulder: 0x84807a, rock: 0x8a8680, bush: [0x3f5f2c, 0x4b6c30, 0x5c7a36] as [number, number, number] },
 };
 
 const createScatter = (items: ScatterItem[], kind: TerrainKind): Group => {
@@ -521,8 +657,9 @@ const createScatter = (items: ScatterItem[], kind: TerrainKind): Group => {
 const createRoads = (world: World): Mesh => {
   const positions: number[] = [];
   const colours: number[] = [];
-  const shoulder = new Color(world.terrain.kind === 'desert' ? 0xb88c5e : 0x9a9478);
-  const asphalt = new Color(0x75695d);
+  const city = world.terrain.kind === 'city';
+  const shoulder = new Color(world.terrain.kind === 'desert' ? 0xb88c5e : city ? 0x8a8a88 : 0x9a9478);
+  const asphalt = new Color(city ? 0x4a4c50 : 0x75695d);
   const paint = new Color(0xe9dfc8);
   const t = world.terrain;
 
@@ -556,8 +693,39 @@ const createRoads = (world: World): Mesh => {
         const x1 = ax + dx * e;
         const z1 = az + dz * e;
         quad(x0, z0, x1, z1, nx, nz, 6, 0.1, shoulder);
-        quad(x0, z0, x1, z1, nx, nz, 3.8, 0.16, asphalt);
+        quad(x0, z0, x1, z1, nx, nz, city ? 4.6 : 3.8, 0.16, asphalt);
         if (Math.floor(s / 6) % 2 === 0) quad(x0, z0, x1, z1, nx, nz, 0.15, 0.2, paint);
+      }
+    }
+  }
+  // Dual carriageways: two wide lanes each way either side of a central reservation.
+  for (const road of world.level.motorways ?? []) {
+    for (let i = 0; i < road.length - 1; i++) {
+      const [ax, az] = road[i];
+      const [bx, bz] = road[i + 1];
+      const len = Math.hypot(bx - ax, bz - az);
+      const dx = (bx - ax) / len;
+      const dz = (bz - az) / len;
+      const nx = -dz;
+      const nz = dx;
+      const step = t.cellSize / 2;
+      for (let s = 0; s < len; s += step) {
+        const e = Math.min(len, s + step + 0.3);
+        const x0 = ax + dx * s;
+        const z0 = az + dz * s;
+        const x1 = ax + dx * e;
+        const z1 = az + dz * e;
+        quad(x0, z0, x1, z1, nx, nz, MOTORWAY_HALF, 0.1, shoulder);
+        quad(x0, z0, x1, z1, nx, nz, MOTORWAY_HALF - 1.2, 0.16, asphalt);
+        quad(x0, z0, x1, z1, nx, nz, 0.9, 0.24, shoulder);
+        for (const side of [-1, 1]) {
+          const ox = nx * side * 5.4;
+          const oz = nz * side * 5.4;
+          if (Math.floor(s / 8) % 2 === 0) quad(x0 + ox, z0 + oz, x1 + ox, z1 + oz, nx, nz, 0.12, 0.2, paint);
+          const ex = nx * side * (MOTORWAY_HALF - 1.6);
+          const ez = nz * side * (MOTORWAY_HALF - 1.6);
+          quad(x0 + ex, z0 + ez, x1 + ex, z1 + ez, nx, nz, 0.12, 0.2, paint);
+        }
       }
     }
   }
@@ -571,14 +739,47 @@ const createRoads = (world: World): Mesh => {
   return mesh;
 };
 
-/** Haul cables and a gondola on each span of the cable car. */
+/** Lattice jib of a tower crane along a span, with a counter-jib and its weights behind the mast. */
+const jibParts = (ax: number, ay: number, az: number, bx: number, bz: number): BufferGeometry[] => {
+  const parts: BufferGeometry[] = [];
+  const dir = new Vector3(bx - ax, 0, bz - az);
+  const len = dir.length();
+  dir.normalize();
+  const side = new Vector3(-dir.z, 0, dir.x);
+  const at = (t: number, s: number, up: number): [number, number, number] => [ax + dir.x * t + side.x * s, ay + up, az + dir.z * t + side.z * s];
+  const yellow = 0xe0b020;
+  for (const s of [-0.7, 0.7]) parts.push(rod(at(-14, s, 0), at(len, s, 0), 0.1, yellow));
+  parts.push(rod(at(-14, 0, 1.6), at(len, 0, 1.2), 0.09, yellow));
+  for (let t = -14; t < len; t += 2.5) {
+    parts.push(rod(at(t, -0.7, 0), at(t + 1.25, 0, t < 0 ? 1.6 : 1.4), 0.05, yellow));
+    parts.push(rod(at(t + 1.25, 0, t < 0 ? 1.6 : 1.4), at(t + 2.5, 0.7, 0), 0.05, yellow));
+  }
+  // Counterweights, a tie bar up to the mast head and a hook block part way out.
+  const cw = at(-12, 0, -1.2);
+  parts.push(part(box(2.4, 2, 3), 0x7a7a74, { x: cw[0], y: cw[1], z: cw[2], ry: Math.atan2(dir.x, dir.z) }));
+  parts.push(rod(at(0, 0, 6), at(len * 0.6, 0, 1.2), 0.05, 0x3a3d42));
+  parts.push(rod(at(0, 0, 6), at(-12, 0, 1.4), 0.05, 0x3a3d42));
+  const hook = at(len * 0.55, 0, -12);
+  parts.push(rod(at(len * 0.55, 0, 0), hook, 0.04, 0x2a2c30));
+  parts.push(part(box(0.8, 1, 0.8), 0xe0b020, { x: hook[0], y: hook[1], z: hook[2] }));
+  return parts;
+};
+
+/** Wires: haul cables and a gondola on a cable car, power line conductors, and crane jibs. */
 const createCables = (world: World): Group => {
   const group = new Group();
   if (!world.cables.length) return group;
   const positions: number[] = [];
-  const sag = CABLE_SAG;
+  const jibs: BufferGeometry[] = [];
   for (const c of world.cables) {
-    for (const side of [-2.6, 2.6]) {
+    if (c.kind === 'jib') {
+      jibs.push(...jibParts(c.ax, c.ay, c.az, c.bx, c.bz));
+      continue;
+    }
+    const sag = WIRE_SAG[c.kind];
+    const spread = WIRE_SPREAD[c.kind];
+    const offsets = c.kind === 'power' ? [-spread, 0, spread] : [-spread, spread];
+    for (const side of offsets) {
       const dx = c.bx - c.ax;
       const dz = c.bz - c.az;
       const len = Math.hypot(dx, dz);
@@ -592,11 +793,22 @@ const createCables = (world: World): Group => {
       }
     }
   }
-  const g = new BufferGeometry();
-  g.setAttribute('position', new Float32BufferAttribute(positions, 3));
-  group.add(new LineSegments(g, new LineBasicMaterial({ color: 0x26282c })));
+  if (jibs.length) {
+    const mesh = new Mesh(merge(jibs), propMaterial);
+    mesh.castShadow = true;
+    group.add(mesh);
+  }
+  if (positions.length) {
+    const g = new BufferGeometry();
+    g.setAttribute('position', new Float32BufferAttribute(positions, 3));
+    // Wires catch a little light at night so they can be made out against the dark.
+    group.add(new LineSegments(g, new LineBasicMaterial({ color: world.terrain.kind === 'city' ? 0x6a7078 : 0x26282c })));
+  }
+  const ropes = world.cables.filter((q) => q.kind === 'cable');
+  if (!ropes.length) return group;
+  const sag = WIRE_SAG.cable;
   // A gondola part way up the middle span.
-  const c = world.cables[Math.floor(world.cables.length / 2)];
+  const c = ropes[Math.floor(ropes.length / 2)];
   const t = 0.4;
   const cabin = new Mesh(
     merge([

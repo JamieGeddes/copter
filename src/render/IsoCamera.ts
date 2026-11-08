@@ -31,6 +31,8 @@ export class IsoCamera {
   private viewHeight: number;
   private targetViewHeight: number;
   private speedZoom = 0;
+  private reliefZoom = 0;
+  private targetReliefZoom = 0;
   private readonly offset = new Vector3();
   private shakeAmount = 0;
   private readonly shakeOffset = new Vector3();
@@ -63,9 +65,17 @@ export class IsoCamera {
     this.shakeAmount = Math.max(this.shakeAmount, amount);
   }
 
+  /**
+   * Widens the view over steep ground so the slopes around the aircraft stay in shot. `relief` is
+   * the spread of ground heights nearby in metres.
+   */
+  setRelief(relief: number): void {
+    this.targetReliefZoom = clamp((relief - 30) / 260, 0, 0.35);
+  }
+
   /** Current visible world height in metres. */
   get visibleHeight(): number {
-    return this.viewHeight * (1 + this.speedZoom);
+    return this.viewHeight * (1 + this.speedZoom + this.reliefZoom);
   }
 
   /** Moves the focus straight to a point (used on spawn). */
@@ -87,6 +97,7 @@ export class IsoCamera {
     this.focus.y = damp(this.focus.y, y, 1.5, dt);
     this.viewHeight = damp(this.viewHeight, this.targetViewHeight, 5, dt);
     this.speedZoom = damp(this.speedZoom, speedFraction * 0.22, 1.2, dt);
+    this.reliefZoom = damp(this.reliefZoom, this.targetReliefZoom, 0.6, dt);
     this.shakeAmount = damp(this.shakeAmount, 0, 5, dt);
     this.apply();
   }

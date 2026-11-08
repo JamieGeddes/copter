@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { rotorProximity } from '../src/heli/FlightModel';
 import { AIRCRAFT } from '../src/heli/HeliSpec';
+import { DEFAULT_BOARDING } from '../src/missions/Boarding';
 import { CAMPAIGN } from '../src/levels';
 import { CargoSystem } from '../src/missions/Cargo';
+import { DEFAULT_WINCH } from '../src/missions/Winch';
 import { pointInSolid } from '../src/world/collision';
 import { World } from '../src/world/World';
 
@@ -49,12 +52,61 @@ describe.each(playable.map((c) => [c.id, c.level!] as const))('level %s', (_id, 
     }
   });
 
-  it('lists every survivor in a rescue objective, with room for them all', () => {
+  it('lists every survivor in a rescue objective, with room for them all or a delivery for several trips', () => {
     const ids = (mission.survivors ?? []).map((s) => s.id);
-    const rescue = mission.objectives.find((o) => o.kind === 'rescue');
+    const ri = mission.objectives.findIndex((o) => o.kind === 'rescue');
+    const rescue = mission.objectives[ri];
     if (!ids.length) return;
     expect(rescue && rescue.kind === 'rescue' ? [...rescue.survivors].sort() : []).toEqual([...ids].sort());
-    expect(mission.capacity ?? 0).toBeGreaterThanOrEqual(ids.length);
+    const capacity = mission.capacity ?? 0;
+    expect(capacity).toBeGreaterThan(0);
+    if (capacity < ids.length) expect(mission.objectives.slice(ri + 1).some((o) => o.kind === 'deliver')).toBe(true);
+  });
+
+  it('leaves somewhere to land beside every landing pickup, with the rotor clear', () => {
+    const spec = AIRCRAFT[level.aircraft];
+    for (const s of (mission.survivors ?? []).filter((q) => q.pickup === 'landing')) {
+      expect(Math.abs(world.groundHeightAt(s.x, s.z) - s.y)).toBeLessThan(0.6);
+      let found = false;
+      const r = DEFAULT_BOARDING.radius - 2;
+      for (let dx = -r; dx <= r && !found; dx += 2) {
+        for (let dz = -r; dz <= r && !found; dz += 2) {
+          const x = s.x + dx;
+          const z = s.z + dz;
+          if (Math.hypot(dx, dz) > r || world.slopeAt(x, z) > 0.12 || world.solids.some((q) => pointInSolid(x, z, q))) continue;
+          const p = rotorProximity(spec, x, world.groundHeightAt(x, z), z, (a, b) => world.groundHeightAt(a, b), 1);
+          if (!p) found = true;
+        }
+      }
+      expect(found, `no landing spot near ${s.id}`).toBe(true);
+    }
+  });
+
+  it('lets the winch reach every winch pickup with the rotor clear of the rock', () => {
+    const spec = AIRCRAFT[level.aircraft];
+    const w = DEFAULT_WINCH;
+    for (const s of mission.survivors ?? []) {
+      if (s.pickup === 'landing' || s.placement === 'water' || s.placement === 'boat') continue;
+      let found = false;
+      for (let a = 0; a < 16 && !found; a++) {
+        for (const d of [0, w.radius * 0.5, w.radius * 0.9]) {
+          const x = s.x + Math.sin((a / 16) * Math.PI * 2) * d;
+          const z = s.z + Math.cos((a / 16) * Math.PI * 2) * d;
+          for (let h = w.minHeight + 1; h <= w.maxHeight - 1 && !found; h += 1) {
+            if (!rotorProximity(spec, x, s.y + h, z, (p, q) => world.groundHeightAt(p, q), 2)) found = true;
+          }
+        }
+      }
+      expect(found, `winch cannot reach ${s.id}`).toBe(true);
+    }
+  });
+
+  it('keeps any lowering cloud above the valley and starts it clear of every survivor', () => {
+    const w = mission.weather;
+    if (!w) return;
+    expect(w.cloudEnd).toBeLessThan(w.cloudStart);
+    for (const s of mission.survivors ?? []) expect(s.y).toBeLessThan(w.cloudStart - 30);
+    for (const p of world.pads) expect(p.top).toBeLessThan(w.cloudEnd - 30);
   });
 
   it('puts survivors on their surface and out of obstacles', () => {

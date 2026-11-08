@@ -2,11 +2,12 @@ import { Vector3 } from 'three';
 import { RotorAudio } from '../audio/RotorAudio';
 import { Sfx } from '../audio/Sfx';
 import { Particles } from '../fx/Particles';
-import { FlightEvent, FlightInput } from '../heli/FlightModel';
+import { FlightEnvironment, FlightEvent, FlightInput, rotorProximity, RotorProximity } from '../heli/FlightModel';
 import { Helicopter } from '../heli/Helicopter';
-import { AIRCRAFT } from '../heli/HeliSpec';
+import { AIRCRAFT, PASSENGER_MASS } from '../heli/HeliSpec';
 import { createHeliModel } from '../heli/models';
 import { ControlAxes } from '../input/bindings';
+import { Boarding, BoardingHint } from '../missions/Boarding';
 import { Bucket, BucketEnv, BucketHint, Spray } from '../missions/Bucket';
 import { CargoEvent, CargoHint, CargoSystem } from '../missions/Cargo';
 import { medalFor, Medal } from '../missions/medals';
@@ -15,6 +16,7 @@ import { SurvivorDef } from '../missions/types';
 import { Winch, WinchHint } from '../missions/Winch';
 import { BucketVisuals } from '../render/BucketVisuals';
 import { CargoVisuals } from '../render/CargoVisuals';
+import { CLEAR_SKY, cloudUniforms } from '../render/cloud';
 import { FireVisuals } from '../render/FireVisuals';
 import { CrowdMesh } from '../render/CrowdMesh';
 import { screenToWorld } from '../render/isoMath';
@@ -29,6 +31,7 @@ import { CrowdSim } from '../world/CrowdSim';
 import { FireGrid } from '../world/FireGrid';
 import { createFireGrid } from '../world/fuel';
 import { LevelDef } from '../world/level';
+import { LocalWind } from '../world/Wind';
 import { World } from '../world/World';
 
 const PHYSICS_DT = 1 / 120;
@@ -44,6 +47,17 @@ const WINCH_TEXT: Record<WinchHint, string> = {
   full: 'Cabin full',
   working: 'Winching…',
 };
+
+const BOARDING_TEXT: Record<BoardingHint, string> = {
+  none: '',
+  land: 'Land near the climbers',
+  closer: 'Land closer to the climbers',
+  full: 'Cabin full',
+  boarding: 'Climber boarding…',
+};
+
+/** Terrain warning starts beeping within this gap at the blade tips. */
+const PROXIMITY_RANGE = 12;
 
 const BUCKET_TEXT: Record<BucketHint, string> = {
   empty: 'Bucket empty: dip it in the lake',
@@ -83,7 +97,21 @@ export class Session {
   readonly heli: Helicopter;
   readonly runner: MissionRunner;
   readonly winch?: Winch;
+  /** Landing pickups, where survivors walk to the aircraft. */
+  readonly boarding?: Boarding;
   readonly cargo?: CargoSystem;
+  private readonly flightEnv: FlightEnvironment;
+  /** Wind where the aircraft is, refreshed every physics step. */
+  private air: LocalWind = { x: 0, z: 0, up: 0, turbulence: 0 };
+  private proximity?: RotorProximity;
+  private beepTimer = 0;
+  private reliefTimer = 0;
+  private driftAngle = 0;
+  private cloudBudget = 0;
+  /** Collective input this frame, for the lift-off hint. */
+  private climbInput = 0;
+  private rotorStrikes = 0;
+  private readonly cloud: Particles;
   private readonly cargoVisuals?: CargoVisuals;
   private readonly hookWorld = new Vector3();
   /** Fire grid and water bucket, on wildfire levels. */
@@ -136,6 +164,7 @@ export class Session {
     this.audio = audio;
     this.sfx = sfx;
     this.world = new World(level);
+    cloudUniforms.cloudBase.value = CLEAR_SKY;
     const scene = stage.newScene(level.terrain.kind);
 
     const terrainMesh = createTerrainMesh(this.world.terrain);
@@ -155,7 +184,20 @@ export class Session {
     this.heli = new Helicopter(spec, createHeliModel(level.aircraft), scene);
 
     this.runner = new MissionRunner(level.mission);
-    if (level.mission.survivors?.length) this.winch = new Winch();
+    const survivors = level.mission.survivors ?? [];
+    if (survivors.some((s) => s.pickup !== 'landing')) this.winch = new Winch();
+    if (survivors.some((s) => s.pickup === 'landing')) this.boarding = new Boarding();
+    const world = this.world;
+    this.flightEnv = {
+      groundHeightAt: (x, z) => world.groundHeightAt(x, z),
+      slopeAt: (x, z) => world.slopeAt(x, z),
+      isWater: (x, z) => world.isWater(x, z),
+      solids: world.solids,
+      bounds: world.bounds,
+      wind: this.air,
+      updraft: 0,
+      rotorStrike: level.terrain.kind === 'alpine',
+    };
     if (level.mission.cargo?.length) {
       this.cargo = new CargoSystem(level.mission.cargo, this.world, spec.slingLength ?? 14);
       this.cargoVisuals = new CargoVisuals(scene, this.world, this.cargo);
@@ -173,15 +215,16 @@ export class Session {
       this.fireVisuals = new FireVisuals(scene, this.world, this.blaze, props, terrainMesh);
       this.bucketVisuals = new BucketVisuals(scene);
     }
-    this.visuals = new MissionVisuals(scene, this.world, this.runner, this.heli.visual, this.winch);
+    this.visuals = new MissionVisuals(scene, this.world, this.runner, this.heli.visual, this.winch, this.boarding);
 
-    const dustColour = { desert: 0xd9ad74, coast: 0xb8ab88, floodplain: 0xa89a74, forest: 0x9a8f6a }[level.terrain.kind];
+    const dustColour = { desert: 0xd9ad74, coast: 0xb8ab88, floodplain: 0xa89a74, forest: 0x9a8f6a, alpine: 0xa49c8c }[level.terrain.kind];
     this.dust = new Particles({ capacity: 900, colour: dustColour, opacity: 0.55, drag: 1.6, gravity: 0.4 });
     this.spray = new Particles({ capacity: 900, colour: 0xe4eef0, opacity: 0.32, drag: 1.8, gravity: -1.5 });
     this.smoke = new Particles({ capacity: 500, colour: 0x3a342f, opacity: 0.6, drag: 0.6, gravity: 2.2 });
     this.fire = new Particles({ capacity: 200, colour: 0xff8a2a, opacity: 0.9, additive: true, drag: 2, gravity: 3 });
     this.flare = new Particles({ capacity: 300, colour: 0xff6a1a, opacity: 0.5, drag: 0.4, gravity: 1.6 });
-    scene.add(this.dust.points, this.spray.points, this.smoke.points, this.fire.points, this.flare.points);
+    this.cloud = new Particles({ capacity: 500, colour: 0xeef2f5, opacity: 0.45, drag: 0.2, gravity: 0 });
+    scene.add(this.dust.points, this.spray.points, this.smoke.points, this.fire.points, this.flare.points, this.cloud.points);
 
     this.hud = new Hud(container, spec, level.name);
     this.hud.setVisible(false);
@@ -198,6 +241,7 @@ export class Session {
   }
 
   dispose(): void {
+    cloudUniforms.cloudBase.value = CLEAR_SKY;
     this.hud.destroy();
     this.sfx.setWinch(0);
   }
@@ -206,6 +250,7 @@ export class Session {
   update(dt: number, axes: ControlAxes | null): void {
     const f = this.heli.flight;
     const input: FlightInput = { moveX: 0, moveZ: 0, climb: 0 };
+    this.climbInput = axes && !this.outcome ? axes.climb : 0;
     if (axes && !this.outcome) {
       const w = screenToWorld(this.stage.iso.basis, axes.x, axes.y);
       input.moveX = w.x;
@@ -222,7 +267,8 @@ export class Session {
     while (this.accumulator >= PHYSICS_DT) {
       this.accumulator -= PHYSICS_DT;
       this.world.wind?.update(PHYSICS_DT);
-      for (const e of f.step(PHYSICS_DT, input, this.world)) this.onFlightEvent(e);
+      this.stepAir();
+      for (const e of f.step(PHYSICS_DT, input, this.flightEnv)) this.onFlightEvent(e);
       if (f.landed && !f.destroyed) {
         const pad = this.world.padAt(f.x, f.z);
         if (pad?.service) f.service(PHYSICS_DT, 0.12, 0.06);
@@ -231,6 +277,7 @@ export class Session {
       this.stepBucket();
     }
     if (this.blaze) this.stepFire(dt);
+    this.checkCables();
     this.visuals.setVisible(true);
     this.cargoVisuals?.setVisible(true);
     this.bucketVisuals?.setVisible(true);
@@ -239,6 +286,38 @@ export class Session {
     const load = axes ? Math.max(0, axes.climb) * 0.7 + Math.hypot(f.tiltX, f.tiltZ) * 0.4 : 0;
     this.audio.update(f.spool, load, f.spec.bladeRate, f.spec.twinRotor);
     this.updateHud(dt);
+  }
+
+  /**
+   * Local air for the next physics step: mountain wind, any heat updraft, passengers aboard,
+   * and the drift that sets in when the pilot loses the horizon in cloud.
+   */
+  private stepAir(): void {
+    const f = this.heli.flight;
+    const env = this.flightEnv;
+    const a = this.world.windAt(f.x, f.z, f.y);
+    this.air.x = a.x;
+    this.air.z = a.z;
+    this.air.up = a.up;
+    this.air.turbulence = a.turbulence;
+    env.updraft = this.world.updraft + a.up;
+    if (f.thinAir) f.payload = (this.runner.onboard + (this.winch?.carryingId ? 1 : 0)) * PASSENGER_MASS;
+    const w = this.level.mission.weather;
+    if (w && !f.landed && this.runner.cloudExposure > 0) {
+      const k = Math.min(1, this.runner.cloudExposure / w.maxExposure);
+      this.driftAngle += (Math.random() - 0.5) * 6 * PHYSICS_DT;
+      f.applyImpulse(Math.sin(this.driftAngle) * 3 * k * PHYSICS_DT, Math.cos(this.driftAngle) * 3 * k * PHYSICS_DT);
+      env.updraft += Math.sin(this.driftAngle * 1.7) * 1.5 * k;
+    }
+  }
+
+  /** Flying the rotor into a cable car wire is fatal. */
+  private checkCables(): void {
+    const f = this.heli.flight;
+    if (!this.world.cables.length || f.destroyed || f.landed) return;
+    if (this.world.cableStrike(f.x, f.y + f.spec.rotorHeight, f.z, f.spec.rotorRadius)) {
+      for (const e of f.wreck('Wire strike on the cable car')) this.onFlightEvent(e);
+    }
   }
 
   private hookState() {
@@ -446,7 +525,7 @@ export class Session {
     this.crowd.update(dt, f.destroyed ? undefined : { x: f.x, z: f.z, agl: f.y - groundY });
     this.crowdMesh.update();
     this.spawnEffects(dt, groundY);
-    for (const p of [this.dust, this.spray, this.smoke, this.fire, this.flare]) {
+    for (const p of [this.dust, this.spray, this.smoke, this.fire, this.flare, this.cloud]) {
       p.update(dt);
       p.setScale(this.stage.pixelsPerMetre);
     }
@@ -461,9 +540,62 @@ export class Session {
       this.heli.visual.hook?.getWorldPosition(this.hookWorld);
       this.cargoVisuals.update(this.time, this.cargo, this.runner, this.hookWorld);
     }
+    this.updateCloud(dt);
     if (follow) {
+      this.reliefTimer -= dt;
+      if (this.reliefTimer <= 0) {
+        this.reliefTimer = 0.3;
+        this.stage.iso.setRelief(this.relief(f.x, f.z));
+      }
       this.stage.iso.follow(dt, f.x, groundY + (f.y - groundY) * 0.75, f.z, f.vx, f.vz, f.groundSpeed / f.spec.maxSpeed, this.cameraLimits());
     }
+  }
+
+  /** Spread of ground heights around a point, for widening the view over steep ground. */
+  private relief(x: number, z: number): number {
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let i = 0; i < 12; i++) {
+      const a = (i / 12) * Math.PI * 2;
+      for (const r of [0, 50, 100]) {
+        const h = this.world.terrain.heightAt(x + Math.sin(a) * r, z + Math.cos(a) * r);
+        lo = Math.min(lo, h);
+        hi = Math.max(hi, h);
+      }
+    }
+    return hi - lo;
+  }
+
+  /** Moves the cloud base in the shaders, and drifts wisps along it against the mountain. */
+  private updateCloud(dt: number): void {
+    const base = this.runner.cloudBase;
+    if (!Number.isFinite(base)) return;
+    cloudUniforms.cloudBase.value = base;
+    const focus = this.stage.iso.focus;
+    const w = this.world.wind;
+    this.cloudBudget += dt * 40;
+    for (let tries = 0; this.cloudBudget >= 1 && tries < 80; tries++) {
+      const a = Math.random() * Math.PI * 2;
+      const r = Math.random() * this.stage.iso.visibleHeight * 0.9;
+      const x = focus.x + Math.sin(a) * r;
+      const z = focus.z + Math.cos(a) * r;
+      const ground = this.world.terrain.heightAt(x, z);
+      if (ground < base - 25) continue;
+      this.cloudBudget -= 1;
+      this.cloud.spawn({
+        x,
+        y: Math.max(ground, base) + Math.random() * 12,
+        z,
+        vx: (w?.x ?? 0) * 0.6,
+        vy: (Math.random() - 0.5) * 0.6,
+        vz: (w?.z ?? 0) * 0.6,
+        life: 4 + Math.random() * 3,
+        size0: 10 + Math.random() * 8,
+        size1: 22 + Math.random() * 14,
+        shade: 0.95 + Math.random() * 0.1,
+      });
+    }
+    this.cloudBudget = Math.min(this.cloudBudget, 5);
   }
 
   private updateMission(dt: number): void {
@@ -493,6 +625,7 @@ export class Session {
       fire: this.blaze
         ? { burning: this.blaze.burningCount, burningIn: (x: number, z: number, r: number) => this.blaze!.burningWithin(x, z, r) }
         : undefined,
+      boardingId: this.winch?.carryingId ?? this.boarding?.walkingId,
     };
 
     // Stranded without fuel away from a service pad.
@@ -508,7 +641,7 @@ export class Session {
       const events = this.winch.update(
         dt,
         { x: this.anchor.x, y: this.anchor.y, z: this.anchor.z, groundSpeed: f.groundSpeed, landed: f.landed || f.destroyed },
-        this.level.mission.survivors ?? [],
+        (this.level.mission.survivors ?? []).filter((s) => s.pickup !== 'landing'),
         this.runner.rescued,
         this.runner.capacityLeft,
       );
@@ -524,6 +657,21 @@ export class Session {
       }
       const s = this.winch.state;
       this.sfx.setWinch(s === 'lowering' ? (before === 'lowering' ? 1 : 0.5) : s === 'raising' ? -1 : 0);
+    }
+
+    if (this.boarding && this.runner.status === 'running') {
+      const events = this.boarding.update(
+        dt,
+        { x: f.x, z: f.z, landed: f.landed && !f.destroyed },
+        this.level.mission.survivors ?? [],
+        this.runner.rescued,
+        this.runner.capacityLeft,
+      );
+      for (const e of events) {
+        this.runner.notifyRescued(e.id);
+        this.sfx.play('rescued');
+        this.hud.message(this.runner.capacityLeft > 0 ? 'Climber aboard!' : 'Climber aboard: cabin full', 2);
+      }
     }
 
     for (const e of this.runner.update(dt, snap)) this.onMissionEvent(e);
@@ -560,9 +708,16 @@ export class Session {
           if (next) this.hud.message(next.text, 3);
         }
         break;
+      case 'cloudWarning':
+        this.sfx.play('warning');
+        this.hud.message(`Cloud coming down over ${e.site}`, 3);
+        break;
       case 'passengerUnloaded':
         this.sfx.play('unload');
-        this.hud.message(e.remaining > 0 ? `Unloading… ${e.remaining} to go` : 'All survivors delivered', 1.6);
+        this.hud.message(
+          e.remaining > 0 ? `Unloading… ${e.remaining} to go` : this.runner.objective?.kind === 'rescue' ? 'Cabin clear: back up the mountain' : 'All survivors delivered',
+          1.6,
+        );
         break;
       case 'complete':
         this.sfx.play('complete');
@@ -582,6 +737,7 @@ export class Session {
     const stats: [string, string][] = [];
     if (this.gatesFlown) stats.push(['Gates', String(this.gatesFlown)]);
     if (this.level.mission.survivors) stats.push(['Rescued', `${this.runner.rescued.size} of ${this.level.mission.survivors.length}`]);
+    if (this.rotorStrikes) stats.push(['Rotor strikes', String(this.rotorStrikes)]);
     if (this.cargo) stats.push(['Cargo damage', `${Math.round(this.cargoDamage * 100)}%`]);
     if (this.blaze && this.bucket) {
       stats.push(['Fire area', `${(this.blaze.burnedArea / 10000).toFixed(1)} ha`]);
@@ -619,6 +775,12 @@ export class Session {
       case 'collision':
         this.hud.message('Collision!', 1.5);
         iso.shake(Math.min(1.5, e.impact * 0.25));
+        break;
+      case 'rotorStrike':
+        this.rotorStrikes++;
+        this.hud.message('Rotor strike!', 1.8);
+        this.sfx.play('warning');
+        iso.shake(0.9 + e.impact * 0.2);
         break;
       case 'lowFuel':
         this.hud.message('Low fuel: return to base', 3);
@@ -663,14 +825,22 @@ export class Session {
     });
     const wind = this.world.wind;
     if (wind) {
+      // Show the wind where the aircraft is, which differs from place to place in the mountains.
       const b = this.stage.iso.basis;
-      const sx = wind.x * b.rightX + wind.z * b.rightZ;
-      const sy = wind.x * b.upX + wind.z * b.upZ;
-      this.hud.updateWind(Math.atan2(sx, sy), wind.speed * MS_TO_KNOTS);
+      const a = this.air;
+      const sx = a.x * b.rightX + a.z * b.rightZ;
+      const sy = a.x * b.upX + a.z * b.upZ;
+      this.hud.updateWind(Math.atan2(sx, sy), Math.hypot(a.x, a.z) * MS_TO_KNOTS, a.up, a.turbulence);
     } else {
       this.hud.updateWind(undefined, 0);
     }
-    if (this.winch) {
+    this.updateMountainHud(dt);
+    if (this.powerHint) {
+      this.hud.updateAssist(this.powerHint, false, 0);
+    } else if (this.boarding && this.boarding.hint !== 'none' && (!this.winch || this.winch.hint === 'none')) {
+      const b = this.boarding;
+      this.hud.updateAssist(BOARDING_TEXT[b.hint], b.hint === 'boarding', b.walkingId ? b.progress : 0);
+    } else if (this.winch) {
       const w = this.winch;
       this.hud.updateAssist(WINCH_TEXT[w.hint], w.hint === 'working', w.state === 'raising' ? 1 : w.state === 'attaching' ? w.attachProgress : 0);
     } else if (this.cargo) {
@@ -693,6 +863,50 @@ export class Session {
     }
     this.hud.setWaypoints(this.waypoints());
     this.hud.tick(dt);
+  }
+
+  /** Guidance about the thin air, which takes priority over the winch and boarding hints. */
+  private powerHint = '';
+
+  /** Power, cloud and terrain warnings on mountain levels. */
+  private updateMountainHud(dt: number): void {
+    const f = this.heli.flight;
+    const weather = this.level.mission.weather;
+    this.powerHint = '';
+    if (f.thinAir && !f.destroyed && this.runner.status === 'running') {
+      if (f.landed && f.thrustMargin <= 0 && this.climbInput > 0.1 && f.liftAvailable > 0.95) this.powerHint = 'Too heavy to lift off in this thin air';
+      else if (!f.landed && f.thrustMargin < 0) this.powerHint = 'No power to hover: descend or gain speed';
+    }
+    if (f.thinAir || weather) {
+      const base = this.runner.cloudBase;
+      this.hud.updateMountain({
+        thrustMargin: f.thinAir ? f.thrustMargin : 1,
+        cloudGap: weather ? base - (f.y + 1.8) : undefined,
+        exposure: weather ? this.runner.cloudExposure / weather.maxExposure : 0,
+      });
+      const near = weather ? 1 - Math.min(1, Math.max(0, (base - f.y) / 25)) : 0;
+      this.hud.setFog(f.destroyed ? 0 : Math.max(near * 0.55, weather ? (this.runner.cloudExposure / weather.maxExposure) * 0.95 : 0));
+    }
+
+    // Terrain proximity: a direction marker and a beep that speeds up as the gap closes.
+    this.proximity = undefined;
+    if (this.flightEnv.rotorStrike && !f.landed && !f.destroyed) {
+      this.proximity = rotorProximity(f.spec, f.x, f.y, f.z, (x, z) => this.world.groundHeightAt(x, z), PROXIMITY_RANGE);
+    }
+    const p = this.proximity;
+    if (p) {
+      const b = this.stage.iso.basis;
+      const angle = Math.atan2(p.dirX * b.rightX + p.dirZ * b.rightZ, p.dirX * b.upX + p.dirZ * b.upZ);
+      this.hud.updateTerrain({ angle, distance: p.distance });
+      this.beepTimer -= dt;
+      if (this.beepTimer <= 0) {
+        this.sfx.play('proximity');
+        this.beepTimer = 0.1 + (p.distance / PROXIMITY_RANGE) * 0.7;
+      }
+    } else {
+      this.hud.updateTerrain(undefined);
+      this.beepTimer = 0;
+    }
   }
 
   /** Guidance for the water bucket. */
@@ -794,7 +1008,7 @@ export class Session {
       if (next && !this.cargo.hooked) out.push(this.project(next.x, next.y + next.def.h + 3, next.z, next.def.label, 'cargo'));
       if (placed && this.cargo.hooked) out.push(this.project(placed.x, this.world.groundHeightAt(placed.x, placed.z) + 6, placed.z, placed.label, 'pad'));
     }
-    if (o?.kind === 'rescue') {
+    if (o?.kind === 'rescue' && r.capacityLeft > 0) {
       const waiting = this.visuals.waitingSurvivors().filter((s: SurvivorDef) => this.spotted.has(s.id));
       // Group survivors close together (e.g. on the same boat) under one marker.
       const groups: { x: number; y: number; z: number; n: number }[] = [];
@@ -804,6 +1018,8 @@ export class Session {
         else groups.push({ x: s.x, y: s.y, z: s.z, n: 1 });
       }
       for (const g of groups) out.push(this.project(g.x, g.y + 2, g.z, g.n > 1 ? `Survivors ×${g.n}` : 'Survivor', 'survivor'));
+    }
+    if (o?.kind === 'rescue') {
       const area = this.level.mission.searchArea;
       const unspotted = (this.level.mission.survivors ?? []).some((s) => !this.spotted.has(s.id) && !r.rescued.has(s.id));
       if (area && unspotted && Math.hypot(area.x - f.x, area.z - f.z) > area.radius * 0.6) {
@@ -821,10 +1037,11 @@ export class Session {
     // Rotor downwash: spray over water, dust over sand, little from concrete.
     if (!f.destroyed && f.spool > 0.5 && agl < WASH_HEIGHT * rotorScale) {
       const overWater = this.world.isWater(f.x, f.z);
+      const snowy = this.level.terrain.kind === 'alpine' && groundY > 195;
       const hard = !overWater && groundY > this.world.terrain.heightAt(f.x, f.z) + 0.05;
       const intensity = Math.pow(1 - agl / (WASH_HEIGHT * rotorScale), 1.3) * f.spool * (hard ? 0.12 : 1);
       this.washBudget += dt * 170 * intensity * rotorScale;
-      const target = overWater ? this.spray : this.dust;
+      const target = overWater || snowy ? this.spray : this.dust;
       while (this.washBudget >= 1) {
         this.washBudget -= 1;
         const a = Math.random() * Math.PI * 2;

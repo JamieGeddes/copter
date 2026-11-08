@@ -30,6 +30,15 @@ export interface FireHudState {
   bucketText: string;
 }
 
+export interface MountainHudState {
+  /** Spare thrust as a fraction of weight; negative means the aircraft cannot hover. */
+  thrustMargin: number;
+  /** Cloud base above the aircraft in metres (negative when in cloud), if there is a cloud layer. */
+  cloudGap?: number;
+  /** 0..1 progress towards disorientation in cloud. */
+  exposure: number;
+}
+
 export interface Waypoint {
   label: string;
   /** Screen position in CSS pixels. */
@@ -78,6 +87,16 @@ export class Hud {
   private readonly bucketBar: HTMLElement;
   private readonly bucketText: HTMLElement;
   private readonly haze: HTMLElement;
+  private readonly fog: HTMLElement;
+  private readonly mountainRow: HTMLElement;
+  private readonly powerBar: HTMLElement;
+  private readonly powerText: HTMLElement;
+  private readonly cloudText: HTMLElement;
+  private readonly exposureRow: HTMLElement;
+  private readonly exposureBar: HTMLElement;
+  private readonly terrain: HTMLElement;
+  private readonly terrainArrow: HTMLElement;
+  private readonly terrainText: HTMLElement;
   private readonly wind: HTMLElement;
   private readonly windArrow: HTMLElement;
   private readonly windText: HTMLElement;
@@ -100,6 +119,7 @@ export class Hud {
     this.root = el('div', 'hud', container);
     el('div', 'vignette', this.root);
     this.haze = el('div', 'haze', this.root);
+    this.fog = el('div', 'haze fog', this.root);
 
     const top = el('div', 'panel top-left', this.root);
     el('div', 'brand', top, 'COPTER');
@@ -150,6 +170,18 @@ export class Hud {
     this.areaText = el('span', 'value', infoRow);
     this.bucketText = el('div', 'bucket-text', this.fireRow);
     this.fireRow.style.display = 'none';
+    this.mountainRow = el('div', 'mountain-info', inst);
+    const powerRow = el('div', 'bar-row', this.mountainRow);
+    el('span', 'label', powerRow, 'PWR');
+    this.powerBar = el('div', 'fill power', el('div', 'bar', powerRow));
+    this.powerText = el('span', 'load-mass', powerRow);
+    const cloudRow = el('div', 'readout small', this.mountainRow);
+    el('span', 'label', cloudRow, 'CLOUD');
+    this.cloudText = el('span', 'value', cloudRow);
+    this.exposureRow = el('div', 'bar-row', this.mountainRow);
+    el('span', 'label', this.exposureRow, 'DISOR');
+    this.exposureBar = el('div', 'fill damage', el('div', 'bar', this.exposureRow));
+    this.mountainRow.style.display = 'none';
     this.wind = el('div', 'wind', inst);
     el('span', 'label', this.wind, 'WIND');
     this.windArrow = el('span', 'wind-arrow', this.wind, '↑');
@@ -160,6 +192,10 @@ export class Hud {
     this.winchText = el('div', 'winch-text', this.winch);
     const wt = el('div', 'bar', this.winch);
     this.winchFill = el('div', 'fill progress', wt);
+
+    this.terrain = el('div', 'panel terrain-warn', this.root);
+    this.terrainArrow = el('span', 'terrain-arrow', this.terrain, '↑');
+    this.terrainText = el('span', 'terrain-text', this.terrain);
 
     this.toast = el('div', 'toast', this.root);
     this.markers = el('div', 'markers', this.root);
@@ -211,12 +247,17 @@ export class Hud {
     if (m.passengers) this.passengers.textContent = `ABOARD ${m.passengers.aboard} / ${m.passengers.capacity}`;
   }
 
-  /** Wind as seen on screen: `angle` in radians clockwise from up, speed in knots. */
-  updateWind(angle: number | undefined, knots: number): void {
+  /**
+   * Wind as seen on screen: `angle` in radians clockwise from up, speed in knots. Rising or
+   * sinking air (m/s) and turbulence (0..1) are shown when strong enough to matter.
+   */
+  updateWind(angle: number | undefined, knots: number, up = 0, turbulence = 0): void {
     this.wind.style.display = angle === undefined ? 'none' : 'flex';
     if (angle === undefined) return;
     this.windArrow.style.transform = `rotate(${angle}rad)`;
-    this.windText.textContent = `${Math.round(knots)} kt`;
+    const vertical = Math.abs(up) >= 0.5 ? ` ${up > 0 ? '▲' : '▼'}${Math.abs(up).toFixed(1)}` : '';
+    this.windText.textContent = `${Math.round(knots)} kt${vertical}${turbulence > 0.4 ? ' TURB' : ''}`;
+    this.windText.classList.toggle('warn-text', up < -1.5 || turbulence > 0.6);
   }
 
   /** Guidance panel for the winch or cargo hook. Empty text hides it. */
@@ -244,6 +285,41 @@ export class Hud {
     this.bucketBar.style.width = `${(s.bucketFill * 100).toFixed(1)}%`;
     this.areaText.textContent = `${s.areaHa.toFixed(1)} ha`;
     this.bucketText.textContent = s.bucketText;
+  }
+
+  /** Mountain gauges: power margin, cloud base and disorientation. Pass undefined to hide them. */
+  updateMountain(s: MountainHudState | undefined): void {
+    this.mountainRow.style.display = s ? 'block' : 'none';
+    if (!s) return;
+    const m = s.thrustMargin;
+    this.powerBar.style.width = `${(Math.min(1, Math.max(0.02, (m + 0.1) / 0.5)) * 100).toFixed(1)}%`;
+    this.powerBar.classList.toggle('low', m < 0.03);
+    this.powerText.textContent = m < 0 ? 'NO HOVER' : `+${Math.round(m * 100)}%`;
+    this.powerText.classList.toggle('warn-text', m < 0);
+    this.cloudText.style.display = s.cloudGap === undefined ? 'none' : '';
+    if (s.cloudGap !== undefined) {
+      this.cloudText.textContent = s.cloudGap < 0 ? 'IN CLOUD' : `${Math.round(s.cloudGap)} m`;
+      this.cloudText.classList.toggle('warn', s.cloudGap < 25);
+    }
+    this.exposureRow.style.display = s.exposure > 0.01 ? 'flex' : 'none';
+    this.exposureBar.style.width = `${(Math.min(1, s.exposure) * 100).toFixed(1)}%`;
+  }
+
+  /**
+   * Terrain proximity warning: `angle` is the screen direction of the nearest rock in radians
+   * clockwise from up, `distance` the gap at the blade tips. Pass undefined to clear it.
+   */
+  updateTerrain(warning: { angle: number; distance: number } | undefined): void {
+    this.terrain.classList.toggle('show', !!warning);
+    if (!warning) return;
+    this.terrain.classList.toggle('close', warning.distance < 4);
+    this.terrainArrow.style.transform = `rotate(${warning.angle}rad)`;
+    this.terrainText.textContent = `TERRAIN ${Math.max(0, warning.distance).toFixed(0)} m`;
+  }
+
+  /** Cloud fog over the view, 0 (clear) to 1 (white-out). */
+  setFog(level: number): void {
+    this.fog.style.opacity = Math.min(1, Math.max(0, level)).toFixed(2);
   }
 
   /** Smoke haze over the view, 0 (clear) to 1 (thick). */

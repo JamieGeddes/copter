@@ -49,6 +49,50 @@ canvas {
   background: radial-gradient(ellipse at 50% 50%, rgba(92, 76, 60, 0.35) 20%, rgba(60, 48, 40, 0.78) 100%);
 }
 
+.haze.fog {
+  transition: opacity 0.4s linear;
+  background: radial-gradient(ellipse at 50% 50%, rgba(232, 236, 240, 0.55) 15%, rgba(226, 231, 236, 0.95) 100%);
+}
+
+.fill.power {
+  background: linear-gradient(90deg, #6fbf5a, #b7f5a0);
+}
+
+.fill.power.low {
+  background: var(--red);
+  animation: blink 0.6s steps(2) infinite;
+}
+
+.warn-text {
+  color: var(--red);
+}
+
+.terrain-warn {
+  left: 50%;
+  top: 22%;
+  transform: translateX(-50%);
+  display: none;
+  align-items: center;
+  gap: 10px;
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--amber);
+}
+
+.terrain-warn.show {
+  display: flex;
+}
+
+.terrain-warn.close {
+  color: var(--red);
+  animation: blink 0.4s steps(2) infinite;
+}
+
+.terrain-arrow {
+  display: inline-block;
+  font-size: 22px;
+}
+
 .panel {
   position: absolute;
   background: var(--panel);

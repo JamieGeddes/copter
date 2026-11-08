@@ -1,3 +1,6 @@
+/** Mass of one rescued passenger, in kg. */
+export const PASSENGER_MASS = 85;
+
 /** Handling characteristics for a helicopter type. All units SI (metres, seconds, radians). */
 export interface HeliSpec {
   id: string;
@@ -61,6 +64,14 @@ export interface HeliSpec {
   hookHeight?: number;
   /** Ceiling above the ground in metres. */
   maxAltitude: number;
+  /**
+   * Thin air: the height above sea level at which the empty aircraft can only just hover out of
+   * ground effect. Rotor thrust falls linearly with altitude to reach it. Leave unset for aircraft
+   * whose performance does not depend on altitude.
+   */
+  serviceCeiling?: number;
+  /** Thrust-to-weight ratio when empty at sea level; used with `serviceCeiling`. */
+  hoverThrust?: number;
 }
 
 export const KESTREL: HeliSpec = {
@@ -192,9 +203,45 @@ export const BUCKETEER: HeliSpec = {
   maxAltitude: 140,
 };
 
+/**
+ * Light high-altitude rescue helicopter: very responsive with plenty of power low down, but the
+ * thin air near the summits takes it away. Carries three passengers and a rescue winch.
+ */
+export const CHAMOIS: HeliSpec = {
+  id: 'chamois',
+  name: 'Chamois AS-5',
+  role: 'Mountain rescue helicopter',
+  maxSpeed: 50,
+  acceleration: 12,
+  cyclicResponse: 3.6,
+  brakeAssist: 1.5,
+  cushionSink: 1.2,
+  cushionGain: 0.9,
+  windFactor: 1,
+  maxTilt: 0.3,
+  climbRate: 8,
+  collectiveResponse: 2.6,
+  yawRate: 2.1,
+  spoolRate: 0.32,
+  fuelEndurance: 720,
+  safeSinkRate: 2.5,
+  safeGroundSpeed: 4,
+  crashSpeed: 9,
+  mass: 1100,
+  bladeRate: 15,
+  bodyRadius: 1.9,
+  bodyHeight: 3.4,
+  rotorRadius: 5.6,
+  rotorHeight: 3.7,
+  maxAltitude: 140,
+  serviceCeiling: 420,
+  hoverThrust: 1.34,
+};
+
 export const AIRCRAFT: Record<string, HeliSpec> = {
   [KESTREL.id]: KESTREL,
   [ALBATROSS.id]: ALBATROSS,
   [HAULER.id]: HAULER,
   [BUCKETEER.id]: BUCKETEER,
+  [CHAMOIS.id]: CHAMOIS,
 };

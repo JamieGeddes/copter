@@ -11,6 +11,8 @@ import {
   Group,
   IcosahedronGeometry,
   InstancedMesh,
+  LineBasicMaterial,
+  LineSegments,
   Matrix4,
   Mesh,
   MeshLambertMaterial,
@@ -21,7 +23,7 @@ import {
 } from 'three';
 import { createRng } from '../core/math';
 import { TerrainKind } from '../world/Terrain';
-import { PlacedBuilding, PlacedPad, ScatterItem, World } from '../world/World';
+import { CABLE_SAG, PlacedBuilding, PlacedPad, ScatterItem, World } from '../world/World';
 import { merge, part, propMaterial, rod, shade, smoothPropMaterial } from './geom';
 
 const box = (w: number, h: number, d: number) => new BoxGeometry(w, h, d);
@@ -280,6 +282,31 @@ const buildingParts = (b: PlacedBuilding, rng: () => number): BufferGeometry[] =
       parts.push(part(box(w + 0.3, 0.6, 0.3), 0x6d6a66, { y: sea + 1.9, z: d / 2 - 0.4, rx: 0.22 }));
       break;
     }
+    case 'pylon': {
+      // Lattice cable car pylon: tapering legs, cross braces and a crossarm with sheaves.
+      const half = w / 2;
+      for (const [lx, lz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+        parts.push(rod([lx * half, -SINK, lz * half], [lx * 0.5, h - 1, lz * 0.5], 0.14, 0x8a9096));
+      }
+      for (let f = 0.2; f < 0.95; f += 0.25) {
+        const k = half - (half - 0.5) * f;
+        parts.push(part(box(k * 2, 0.12, 0.12), 0x8a9096, { y: h * f - 1, z: k }));
+        parts.push(part(box(k * 2, 0.12, 0.12), 0x8a9096, { y: h * f - 1, z: -k }));
+        parts.push(part(box(0.12, 0.12, k * 2), 0x8a9096, { y: h * f - 1, x: k }));
+        parts.push(part(box(0.12, 0.12, k * 2), 0x8a9096, { y: h * f - 1, x: -k }));
+      }
+      parts.push(part(box(6, 0.5, 0.5), 0xc8392b, { y: h - 0.8 }));
+      for (const sx of [-2.6, 2.6]) parts.push(part(new CylinderGeometry(0.35, 0.35, 0.3, 8), 0x3b3d42, { x: sx, y: h - 0.4, rx: Math.PI / 2 }));
+      break;
+    }
+    case 'cableStation': {
+      parts.push(part(box(w, h * 0.6 + SINK, d), wall, { y: (h * 0.6 - SINK) / 2 }));
+      parts.push(part(box(w * 0.9, h * 0.4, d * 0.5), 0x5a6066, { y: h * 0.8, z: -d * 0.2 }));
+      parts.push(part(box(w + 0.6, 0.3, d + 0.6), 0x3b3d42, { y: h + 0.1 }));
+      parts.push(part(box(w * 0.8, 1.4, 0.1), DARK_WINDOW, { y: h * 0.35, z: d / 2 + 0.03 }));
+      parts.push(part(new CylinderGeometry(1.4, 1.4, 0.4, 14), 0x8a9096, { y: h - 0.4 }));
+      break;
+    }
     case 'tank': {
       parts.push(part(new CylinderGeometry(w / 2, w / 2, h + SINK, 14), wall, { y: (h - SINK) / 2 }));
       parts.push(part(new SphereGeometry(w / 2, 14, 6, 0, Math.PI * 2, 0, Math.PI / 2), shade(colour, 0.9), { y: h, sy: 0.35 }));
@@ -450,6 +477,7 @@ const PALETTES = {
   coast: { boulder: 0x8c867a, rock: 0x9a958a, bush: [0x5d7a3a, 0x6b8a40, 0x8a8a3a] as [number, number, number] },
   floodplain: { boulder: 0x8c867a, rock: 0x9a958a, bush: [0x4f7232, 0x5f8238, 0x6d8a3c] as [number, number, number] },
   forest: { boulder: 0x7d786e, rock: 0x8a857a, bush: [0x3f5f2c, 0x4b6c30, 0x5c7a36] as [number, number, number] },
+  alpine: { boulder: 0x84807a, rock: 0x928d86, bush: [0x46602e, 0x55703a, 0x667a40] as [number, number, number] },
 };
 
 const createScatter = (items: ScatterItem[], kind: TerrainKind): Group => {
@@ -543,6 +571,50 @@ const createRoads = (world: World): Mesh => {
   return mesh;
 };
 
+/** Haul cables and a gondola on each span of the cable car. */
+const createCables = (world: World): Group => {
+  const group = new Group();
+  if (!world.cables.length) return group;
+  const positions: number[] = [];
+  const sag = CABLE_SAG;
+  for (const c of world.cables) {
+    for (const side of [-2.6, 2.6]) {
+      const dx = c.bx - c.ax;
+      const dz = c.bz - c.az;
+      const len = Math.hypot(dx, dz);
+      const ox = (-dz / len) * side;
+      const oz = (dx / len) * side;
+      const steps = 16;
+      for (let i = 0; i < steps; i++) {
+        for (const t of [i / steps, (i + 1) / steps]) {
+          positions.push(c.ax + dx * t + ox, c.ay + (c.by - c.ay) * t - Math.sin(t * Math.PI) * sag, c.az + dz * t + oz);
+        }
+      }
+    }
+  }
+  const g = new BufferGeometry();
+  g.setAttribute('position', new Float32BufferAttribute(positions, 3));
+  group.add(new LineSegments(g, new LineBasicMaterial({ color: 0x26282c })));
+  // A gondola part way up the middle span.
+  const c = world.cables[Math.floor(world.cables.length / 2)];
+  const t = 0.4;
+  const cabin = new Mesh(
+    merge([
+      part(box(2.6, 2.2, 3.2), 0xc8392b, { y: -3.4 }),
+      part(box(2.7, 0.8, 3.3), DARK_WINDOW, { y: -3.0 }),
+      part(box(0.15, 2.4, 0.15), 0x3b3d42, { y: -1.2 }),
+    ]),
+    propMaterial,
+  );
+  const ox = -(c.bz - c.az) / Math.hypot(c.bx - c.ax, c.bz - c.az);
+  const oz = (c.bx - c.ax) / Math.hypot(c.bx - c.ax, c.bz - c.az);
+  cabin.position.set(c.ax + (c.bx - c.ax) * t + ox * 2.6, c.ay + (c.by - c.ay) * t - Math.sin(t * Math.PI) * sag, c.az + (c.bz - c.az) * t + oz * 2.6);
+  cabin.rotation.y = Math.atan2(c.bx - c.ax, c.bz - c.az);
+  cabin.castShadow = true;
+  group.add(cabin);
+  return group;
+};
+
 /** Builds every static prop in the level. */
 export const createProps = (world: World): Group => {
   const group = new Group();
@@ -550,6 +622,7 @@ export const createProps = (world: World): Group => {
   group.add(createPads(world));
   group.add(createScatter(world.scatter, world.terrain.kind));
   group.add(createRoads(world));
+  group.add(createCables(world));
   for (const p of world.pads.filter((pad) => pad.service).slice(0, 1)) group.add(createWindsock(p));
   return group;
 };

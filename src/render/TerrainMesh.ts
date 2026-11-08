@@ -2,6 +2,7 @@ import { BufferAttribute, BufferGeometry, Color, Mesh, MeshLambertMaterial } fro
 import { clamp, smoothstep } from '../core/math';
 import { Noise2D } from '../world/noise';
 import { Terrain } from '../world/Terrain';
+import { addCloud } from './cloud';
 
 const SAND = new Color(0xe4bb80);
 const SAND_LIGHT = new Color(0xf0d2a0);
@@ -116,6 +117,40 @@ const forestColour = (c: Color, terrain: Terrain, i: number, x: number, z: numbe
   c.lerp(LAKEBED, smoothstep(-0.2, -2.5, h));
 };
 
+const ALP_MEADOW = new Color(0x8fae5c);
+const ALP_MEADOW_DRY = new Color(0xa8a868);
+const ALP_PASTURE = new Color(0x8a8a5e);
+const ALP_FOREST = new Color(0x3e5a32);
+const ALP_PACKED = new Color(0x9c9478);
+const SCREE = new Color(0x9a9286);
+const ALP_ROCK = [new Color(0x77726c), new Color(0x8a847c), new Color(0x66625e), new Color(0x958f86)];
+const SNOW = new Color(0xf2f5f8);
+const SNOW_SHADE = new Color(0xd6e0ea);
+const ICE = new Color(0xbcd6e6);
+
+/** Palette shifts with height: meadow and pine woods, then scree and rock, then snow. */
+const alpineColour = (c: Color, terrain: Terrain, i: number, x: number, z: number, h: number, noise: Noise2D): void => {
+  const slope = terrain.slopeAt(x, z);
+  const canopy = terrain.dune[i];
+  const n = noise.fbm(x / 70, z / 70, 3);
+  c.copy(ALP_MEADOW).lerp(ALP_MEADOW_DRY, clamp(noise.fbm(x / 110 + 9, z / 110, 2) * 1.3, 0, 1) * 0.6);
+  c.lerp(ALP_FOREST, smoothstep(0.05, 0.6, canopy) * 0.9);
+  c.lerp(ALP_PACKED, terrain.packed[i] * 0.6 * (1 - smoothstep(90, 140, h)));
+  // Thin pasture above the woods, giving way to scree on the steeper ground.
+  c.lerp(ALP_PASTURE, smoothstep(95, 150, h + n * 20) * (1 - canopy));
+  c.lerp(SCREE, smoothstep(130, 190, h + n * 25) * smoothstep(0.15, 0.35, slope));
+  const rockMix = Math.max(smoothstep(0.32, 0.55, slope), smoothstep(150, 200, h + n * 30) * 0.6);
+  if (rockMix > 0) {
+    const band = Math.floor(h / 4 + noise.noise(x / 40, z / 40) * 1.4);
+    c.lerp(ALP_ROCK[((band % ALP_ROCK.length) + ALP_ROCK.length) % ALP_ROCK.length], rockMix);
+  }
+  // Snow lies above the snow line, except on faces too steep to hold it.
+  const snow = smoothstep(195, 225, h + n * 28 + noise.fbm(x / 18, z / 18, 2) * 6) * (1 - smoothstep(0.5, 0.75, slope));
+  c.lerp(SNOW, snow);
+  c.lerp(SNOW_SHADE, snow * clamp(0.3 - n, 0, 1) * 0.6);
+  c.lerp(ICE, terrain.river[i] * 0.85);
+};
+
 /** Builds the terrain mesh with vertex colours and a world-space grain shader. */
 export const createTerrainMesh = (terrain: Terrain): Mesh => {
   const v = terrain.verts;
@@ -137,6 +172,7 @@ export const createTerrainMesh = (terrain: Terrain): Mesh => {
       if (terrain.kind === 'coast') coastColour(c, terrain, i, x, z, h, noise);
       else if (terrain.kind === 'floodplain') floodplainColour(c, terrain, i, x, z, h, noise);
       else if (terrain.kind === 'forest') forestColour(c, terrain, i, x, z, h, noise);
+      else if (terrain.kind === 'alpine') alpineColour(c, terrain, i, x, z, h, noise);
       else desertColour(c, terrain, i, x, z, h, noise);
       colours[i * 3] = c.r;
       colours[i * 3 + 1] = c.g;
@@ -166,6 +202,9 @@ export const createTerrainMesh = (terrain: Terrain): Mesh => {
   const geometry = new BufferGeometry();
   geometry.setAttribute('position', new BufferAttribute(positions, 3));
   geometry.setAttribute('color', new BufferAttribute(colours, 3));
+  const alpine = terrain.kind === 'alpine';
+  // Glacier ice, for drawing crevasses.
+  if (alpine) geometry.setAttribute('ice', new BufferAttribute(terrain.river, 1));
   geometry.setIndex(new BufferAttribute(indices, 1));
   geometry.computeVertexNormals();
   geometry.computeBoundingSphere();
@@ -173,16 +212,16 @@ export const createTerrainMesh = (terrain: Terrain): Mesh => {
   const material = new MeshLambertMaterial({ vertexColors: true });
   material.onBeforeCompile = (shader) => {
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vWorldPos;')
+      .replace('#include <common>', `#include <common>\nvarying vec3 vWorldPos;${alpine ? '\nattribute float ice;\nvarying float vIce;' : ''}`)
       .replace(
         '#include <begin_vertex>',
-        '#include <begin_vertex>\nvWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;',
+        `#include <begin_vertex>\nvWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;${alpine ? '\nvIce = ice;' : ''}`,
       );
     shader.fragmentShader = shader.fragmentShader
       .replace(
         '#include <common>',
         `#include <common>
-varying vec3 vWorldPos;
+varying vec3 vWorldPos;${alpine ? '\nvarying float vIce;' : ''}
 float hash12(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
   p3 += dot(p3, p3.yzx + 33.33);
@@ -216,11 +255,20 @@ float vnoise(vec2 p) {
         : '0.0'
   };
   float patches = (vnoise(p * 0.035) - 0.5) * 0.12;
-  diffuseColor.rgb *= (1.0 + grain + ripple + patches) * (1.0 - pebble);
+  diffuseColor.rgb *= (1.0 + grain + ripple + patches) * (1.0 - pebble);${
+    alpine
+      ? `
+  // Crevasses run across the flow of the glacier.
+  float flow = dot(p, vec2(0.7071, 0.7071)) * 0.32 + vnoise(p * 0.06) * 5.0;
+  float crevasse = smoothstep(0.86, 0.97, abs(sin(flow))) * smoothstep(0.35, 0.8, vIce) * step(0.35, vnoise(p * 0.11));
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.22, 0.38, 0.52), crevasse * 0.85);`
+      : ''
+  }
 }`,
       );
   };
 
+  addCloud(material);
   const mesh = new Mesh(geometry, material);
   mesh.receiveShadow = true;
   mesh.castShadow = true;

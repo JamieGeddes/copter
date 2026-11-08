@@ -44,7 +44,7 @@ export type ObjectiveDef =
       headingTolerance?: number;
     };
 
-export type SurvivorPlacement = 'water' | 'boat' | 'rocks';
+export type SurvivorPlacement = 'water' | 'boat' | 'rocks' | 'ledge' | 'snow';
 
 export interface SurvivorDef {
   id: string;
@@ -53,6 +53,21 @@ export interface SurvivorDef {
   placement: SurvivorPlacement;
   /** Height of the surface the survivor is on (0 for water). */
   y: number;
+  /** Winched up from a hover (default), or walks to the aircraft once it lands nearby. */
+  pickup?: 'winch' | 'landing';
+  /** Name of the place, for messages such as cloud warnings. */
+  site?: string;
+}
+
+/** A cloud layer whose base lowers through the mission, closing off the highest sites first. */
+export interface WeatherDef {
+  /** Cloud base height above sea level at the start and the end of the descent. */
+  cloudStart: number;
+  cloudEnd: number;
+  /** Seconds the cloud base takes to come down. */
+  duration: number;
+  /** Seconds the aircraft can spend in cloud before the pilot is fatally disoriented. */
+  maxExposure: number;
 }
 
 export interface MedalTimes {
@@ -81,4 +96,6 @@ export interface MissionDef {
   spotRange?: number;
   /** Underslung loads for heavy-lift missions. */
   cargo?: CargoDef[];
+  /** A lowering cloud layer. */
+  weather?: WeatherDef;
 }

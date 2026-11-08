@@ -28,6 +28,7 @@ const LIGHTING: Record<TerrainKind, Lighting> = {
   coast: { background: 0x1d4a5e, sky: 0xe6eef2, ground: 0x7d8f74, hemi: 1.15, sun: 0xfff4e4, sunIntensity: 2.1 },
   floodplain: { background: 0x7a8a5c, sky: 0xeef2ee, ground: 0x8a9a6a, hemi: 1.2, sun: 0xfff2dc, sunIntensity: 2.2 },
   forest: { background: 0x4f6a3c, sky: 0xeaf0e4, ground: 0x6f7f4c, hemi: 1.1, sun: 0xffe8c4, sunIntensity: 2.0 },
+  alpine: { background: 0x8b98a4, sky: 0xe8eef4, ground: 0x6f7a6a, hemi: 1.15, sun: 0xfff2e2, sunIntensity: 2.1 },
 };
 
 /** Frees GPU resources held by a scene. Shared materials are left alone. */
@@ -87,7 +88,7 @@ export class Stage {
     sun.castShadow = true;
     sun.shadow.mapSize.set(SHADOW_MAP, SHADOW_MAP);
     sun.shadow.camera.near = 1;
-    sun.shadow.camera.far = 700;
+    sun.shadow.camera.far = 1100;
     sun.shadow.bias = -0.0004;
     sun.shadow.normalBias = 0.04;
     sun.shadow.radius = 2;
@@ -139,7 +140,7 @@ export class Stage {
       .addScaledVector(this.lightUp, b)
       .addScaledVector(this.sunDir, c);
     this.sun.target.position.copy(centre);
-    this.sun.position.copy(centre).addScaledVector(this.sunDir, 350);
+    this.sun.position.copy(centre).addScaledVector(this.sunDir, 550);
     this.sun.target.updateMatrixWorld();
   }
 }

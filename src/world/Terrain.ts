@@ -96,7 +96,40 @@ export interface ForestConfig extends BaseTerrainConfig {
   river: Riverbed & { xMin: number; xMax: number };
 }
 
-export type TerrainConfig = DesertConfig | CoastConfig | FloodplainConfig | ForestConfig;
+/** A rock step across the slope: ground behind the face (against `facing`) is raised by `height`. */
+export interface CliffBand {
+  x: number;
+  z: number;
+  /** Half-length of the face. */
+  radius: number;
+  height: number;
+  /** Direction the face looks towards, in radians (0 = +z). */
+  facing: number;
+}
+
+/**
+ * A mountain range rising from a valley floor towards the top of the screen, laid out in the same
+ * diagonal axes as the coast: `u` points down the screen towards the valley and `v` across it.
+ * Woodland density is stored per vertex in `dune` and glacier ice in `river`.
+ */
+export interface AlpineConfig extends BaseTerrainConfig {
+  kind: 'alpine';
+  valleyHeight: number;
+  /** `u` where the slopes leave the valley floor, and where they reach the main ridge. */
+  footU: number;
+  ridgeU: number;
+  ridgeHeight: number;
+  /** Spurs running down from the ridge, by position across the range. */
+  spurs: { v: number; width: number; height: number }[];
+  peaks: { x: number; z: number; radius: number; height: number }[];
+  cliffs: CliffBand[];
+  /** Ice flowing down a polyline: smooth, slightly sunken and masked for colouring. */
+  glacier: { points: [number, number][]; width: number };
+  /** Height of the tree line. */
+  treeLine: number;
+}
+
+export type TerrainConfig = DesertConfig | CoastConfig | FloodplainConfig | ForestConfig | AlpineConfig;
 
 /** Centre line of a floodplain river (z for a given x). */
 export const floodRiverZ = (r: FloodRiver, x: number): number =>
@@ -160,11 +193,16 @@ export class Terrain {
     return Math.round((v + this.half) / this.cellSize);
   }
 
-  /** Woodland density (0 bare, 1 dense) at the vertex nearest a position; forests only. */
+  /** True for terrain kinds that store woodland density in `dune`. */
+  get wooded(): boolean {
+    return this.kind === 'forest' || this.kind === 'alpine';
+  }
+
+  /** Woodland density (0 bare, 1 dense) at the vertex nearest a position; forests and mountains only. */
   canopyAt(x: number, z: number): number {
     const ix = clamp(Math.round((x + this.half) / this.cellSize), 0, this.cells);
     const iz = clamp(Math.round((z + this.half) / this.cellSize), 0, this.cells);
-    return this.kind === 'forest' ? this.dune[this.index(ix, iz)] : 0;
+    return this.wooded ? this.dune[this.index(ix, iz)] : 0;
   }
 
   get half(): number {
@@ -214,6 +252,7 @@ export class Terrain {
     if (cfg.kind === 'coast') return Terrain.generateCoast(cfg);
     if (cfg.kind === 'floodplain') return Terrain.generateFloodplain(cfg);
     if (cfg.kind === 'forest') return Terrain.generateForest(cfg);
+    if (cfg.kind === 'alpine') return Terrain.generateAlpine(cfg);
     return Terrain.generateDesert(cfg);
   }
 
@@ -346,6 +385,64 @@ export class Terrain {
       return { h, dune: canopy, river: water, beach: 0 };
     };
     return Terrain.build(cfg, natural, noise, 'forest');
+  }
+
+  /**
+   * Builds a mountain range: a valley floor, slopes rising to a ridge with spurs and peaks,
+   * ridged noise for sharp crests, cliff bands, a smooth glacier and pine woods below the tree line.
+   */
+  static generateAlpine(cfg: AlpineConfig): Terrain {
+    const noise = new Noise2D(cfg.seed);
+    const glacierDist = (x: number, z: number): number => {
+      let best = Infinity;
+      const pts = cfg.glacier.points;
+      for (let i = 0; i < pts.length - 1; i++) {
+        const [ax, az] = pts[i];
+        const [bx, bz] = pts[i + 1];
+        const dx = bx - ax;
+        const dz = bz - az;
+        const t = clamp(((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz), 0, 1);
+        best = Math.min(best, Math.hypot(x - (ax + dx * t), z - (az + dz * t)));
+      }
+      return best;
+    };
+    const natural = (x: number, z: number) => {
+      const { u, v } = coastAxes(x, z);
+      const rise = smoothstep(cfg.footU, cfg.ridgeU, u + noise.fbm(v / 260, 1.7, 3) * 50);
+      let base = cfg.valleyHeight + Math.pow(rise, 1.25) * (cfg.ridgeHeight - cfg.valleyHeight);
+      base += noise.fbm(x / 160, z / 160, 3) * 5 * (1 - rise);
+      for (const sp of cfg.spurs) {
+        const d = (v - sp.v) / sp.width;
+        base += Math.exp(-d * d) * sp.height * Math.pow(rise, 0.7);
+      }
+      for (const p of cfg.peaks) {
+        const d = Math.hypot(x - p.x, z - p.z) / p.radius;
+        base += Math.exp(-d * d) * p.height;
+      }
+      // Sharp crests and broken rock, growing with height.
+      const ridged = 1 - Math.abs(noise.fbm(x / 170 + 11, z / 170 - 3, 4));
+      let rough = Math.pow(ridged, 3) * 60 * rise + noise.fbm(x / 55, z / 55, 3) * 10 * rise + noise.fbm(x / 16, z / 16, 2) * 1.2 * rise;
+      for (const c of cfg.cliffs) {
+        const fx = Math.sin(c.facing);
+        const fz = Math.cos(c.facing);
+        const across = (x - c.x) * fx + (z - c.z) * fz + noise.fbm(x / 20, z / 20, 2) * 3;
+        const along = Math.abs(-(x - c.x) * fz + (z - c.z) * fx);
+        const reach = smoothstep(c.radius + 30, c.radius, along);
+        rough += c.height * smoothstep(5, -5, across) * reach;
+      }
+      const ice = smoothstep(cfg.glacier.width, cfg.glacier.width * 0.55, glacierDist(x, z) + noise.fbm(x / 40, z / 40, 2) * 10);
+      let h = base + rough * (1 - ice * 0.9) - ice * 5;
+
+      // Hills close the valley in at the edges of the map.
+      const edgeDist = Math.max(Math.abs(x), Math.abs(z));
+      const edge = smoothstep(cfg.edgeStart, cfg.edgeStart + 120, edgeDist + noise.fbm(x / 60, z / 60, 3) * 30);
+      h = Math.max(h, edge * (cfg.valleyHeight + 70 + noise.fbm(x / 90, z / 90, 3) * 20));
+
+      const woods = smoothstep(-0.25, 0.25, noise.fbm(x / 130 - 21, z / 130 + 6, 3));
+      const canopy = clamp(woods * (1 - smoothstep(cfg.treeLine - 25, cfg.treeLine, h)) * (1 - ice) * (0.8 + noise.fbm(x / 28, z / 28, 2) * 0.5), 0, 1);
+      return { h, dune: canopy, river: ice, beach: 0 };
+    };
+    return Terrain.build(cfg, natural, noise, 'alpine');
   }
 
   private static build(

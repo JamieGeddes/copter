@@ -4,6 +4,7 @@ import { createChamoisModel } from './ChamoisModel';
 import { createHaulerModel } from './HaulerModel';
 import { createKestrelModel } from './KestrelModel';
 import { createLifelineModel } from './LifelineModel';
+import { createMantisModel } from './MantisModel';
 import { HeliVisualParts } from './rotor';
 
 const BUILDERS: Record<string, () => HeliVisualParts> = {
@@ -13,6 +14,7 @@ const BUILDERS: Record<string, () => HeliVisualParts> = {
   bucketeer: createBucketeerModel,
   chamois: createChamoisModel,
   lifeline: createLifelineModel,
+  mantis: createMantisModel,
 };
 
 export const createHeliModel = (id: string): HeliVisualParts => {

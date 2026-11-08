@@ -4,6 +4,7 @@ import { HEAVY_LIFT } from './heavyLift';
 import { MOUNTAIN_RESCUE } from './mountainRescue';
 import { NIGHT_MEDEVAC } from './nightMedevac';
 import { SEA_RESCUE } from './seaRescue';
+import { SKY_CRANE } from './skyCrane';
 import { WILDFIRE } from './wildfire';
 
 export interface CampaignEntry {
@@ -32,7 +33,7 @@ export const CAMPAIGN: CampaignEntry[] = [
   entry(WILDFIRE, 'Bucketeer FH-2'),
   entry(MOUNTAIN_RESCUE, 'Chamois AS-5'),
   entry(NIGHT_MEDEVAC, 'Lifeline EC-1'),
-  { id: 'sky-crane', title: 'Sky Crane', aircraft: 'Mantis S-64', skill: 'Precise placement', summary: 'Lower a transmitter mast onto its mountings.' },
+  entry(SKY_CRANE, 'Mantis MK-9'),
   { id: 'escort', title: 'Convoy Escort', aircraft: 'Viper AH-6', skill: 'Combat and awareness', summary: 'Protect a relief convoy from hostile positions.' },
 ];
 

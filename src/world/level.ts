@@ -42,7 +42,9 @@ export type BuildingKind =
   /** Thin lattice radio mast with warning lights. */
   | 'mast'
   /** Steel lattice electricity pylon. */
-  | 'powerPylon';
+  | 'powerPylon'
+  /** Concrete plinth with anchor plates, for a mast to stand on. */
+  | 'footing';
 
 export interface BuildingDef {
   kind: BuildingKind;

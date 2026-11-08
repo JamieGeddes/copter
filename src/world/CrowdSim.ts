@@ -24,7 +24,18 @@ export interface Threat {
   z: number;
   /** Height above the ground; low aircraft are scarier. */
   agl: number;
+  /**
+   * Fixed reach in metres within which people run, for threats other than rotor wash, such as a
+   * load swinging close to the ground. Unset for the aircraft, whose reach grows as it gets lower.
+   */
+  reach?: number;
 }
+
+/** 0..1 fright from one threat at a distance. */
+const scareFrom = (t: Threat, dist: number): number => {
+  if (t.reach !== undefined) return Math.max(0, 1 - dist / t.reach);
+  return t.agl < 25 ? Math.max(0, 1 - dist / (14 + (25 - t.agl) * 0.6)) : 0;
+};
 
 const WALK = 1.3;
 const RUN = 5.2;
@@ -82,15 +93,25 @@ export class CrowdSim {
     return this.world.terrain.slopeAt(x, z) > 0.3 || this.world.isWater(x, z) || this.world.terrain.heightAt(x, z) < (this.world.seaLevel ?? -Infinity) + 0.4;
   }
 
-  update(dt: number, threat?: Threat): void {
+  /** Moves everyone on, running from the most frightening of the threats. */
+  update(dt: number, threats: readonly Threat[] = []): void {
     for (const p of this.people) {
       let targetHeading = p.heading;
       let targetSpeed = p.speed;
 
-      const dx = threat ? p.x - threat.x : 0;
-      const dz = threat ? p.z - threat.z : 0;
-      const dist = Math.hypot(dx, dz);
-      const scare = threat && threat.agl < 25 ? Math.max(0, 1 - dist / (14 + (25 - threat.agl) * 0.6)) : 0;
+      let scare = 0;
+      let dx = 0;
+      let dz = 0;
+      for (const t of threats) {
+        const ox = p.x - t.x;
+        const oz = p.z - t.z;
+        const k = scareFrom(t, Math.hypot(ox, oz));
+        if (k > scare) {
+          scare = k;
+          dx = ox;
+          dz = oz;
+        }
+      }
       p.fear = Math.max(scare, p.fear - dt * 0.25);
 
       if (p.fear > 0.05) {

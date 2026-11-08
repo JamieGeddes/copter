@@ -39,6 +39,25 @@ export interface MountainHudState {
   exposure: number;
 }
 
+/** Offsets of a load from its seat on an assembly, for the placement readouts. */
+export interface PlacementHudState {
+  /** Which part, e.g. "Mast section 2 of 4". */
+  title: string;
+  /** Height of the load's base above the seat, in metres. */
+  height: number;
+  seated: boolean;
+  /** Horizontal distance to the seat, its tolerance, and the screen direction to move the load (radians clockwise from up). */
+  lateral: number;
+  lateralTolerance: number;
+  angle: number;
+  /** Heading error in degrees: positive means turn clockwise. */
+  turn: number;
+  turnTolerance: number;
+  /** 0..1 progress of the bolting, and the seconds it takes. */
+  bolt: number;
+  boltSeconds: number;
+}
+
 export interface CallHudItem {
   label: string;
   severity: 'critical' | 'serious';
@@ -126,12 +145,25 @@ export class Hud {
   private readonly calls: HTMLElement;
   private readonly callList: HTMLElement;
   private readonly lightText: HTMLElement;
+  private readonly placement: HTMLElement;
+  private readonly placementTitle: HTMLElement;
+  private readonly heightValue: HTMLElement;
+  private readonly offsetArrow: HTMLElement;
+  private readonly offsetValue: HTMLElement;
+  private readonly turnValue: HTMLElement;
+  private readonly boltFill: HTMLElement;
+  private readonly boltText: HTMLElement;
   private callsKey = '';
   private toastTimer = 0;
   private markerEls: HTMLElement[] = [];
   private objectivesKey = '';
 
-  constructor(container: HTMLElement, aircraft: { name: string; role: string }, levelName: string, options: { night?: boolean } = {}) {
+  constructor(
+    container: HTMLElement,
+    aircraft: { name: string; role: string },
+    levelName: string,
+    options: { night?: boolean; crane?: boolean } = {},
+  ) {
     this.root = el('div', options.night ? 'hud night' : 'hud', container);
     el('div', 'vignette', this.root);
     this.haze = el('div', 'haze', this.root);
@@ -219,11 +251,34 @@ export class Hud {
     this.lightText = el('div', 'light-text', this.calls);
     this.calls.style.display = 'none';
 
+    this.placement = el('div', 'panel placement', this.root);
+    this.placementTitle = el('div', 'placement-title', this.placement);
+    const placementRow = (label: string) => {
+      const row = el('div', 'readout small', this.placement);
+      el('span', 'label', row, label);
+      return el('span', 'value', row);
+    };
+    this.heightValue = placementRow('HEIGHT');
+    const offsetRow = el('div', 'readout small', this.placement);
+    el('span', 'label', offsetRow, 'OFFSET');
+    const offset = el('span', 'value', offsetRow);
+    this.offsetArrow = el('span', 'offset-arrow', offset, '↑');
+    this.offsetValue = el('span', '', offset);
+    this.turnValue = placementRow('TURN');
+    const boltRow = el('div', 'bar-row', this.placement);
+    el('span', 'label', boltRow, 'BOLT');
+    this.boltFill = el('div', 'fill progress', el('div', 'bar', boltRow));
+    this.boltText = el('span', 'load-mass', boltRow);
+    this.placement.style.display = 'none';
+
     this.toast = el('div', 'toast', this.root);
     this.markers = el('div', 'markers', this.root);
 
     this.help = el('div', 'panel help', this.root);
-    const controls = options.night ? [...CONTROLS.slice(0, 4), ['F', 'Searchlight'] as [string, string], ...CONTROLS.slice(4)] : CONTROLS;
+    const extra: [string, string][] = [];
+    if (options.night) extra.push(['F', 'Searchlight']);
+    if (options.crane) extra.push(['[ / ]  or  , / .', 'Turn the load'], ['C', 'Precision camera']);
+    const controls = [...CONTROLS.slice(0, 5), ...extra, ...CONTROLS.slice(5)];
     for (const [keys, action] of controls) {
       const row = el('div', 'help-row', this.help);
       el('span', 'keys', row, keys);
@@ -375,6 +430,30 @@ export class Hud {
       t.className = `call-timer ${c.timeLeft < 30 ? 'urgent' : c.golden ? 'golden' : 'late'}`;
     });
     this.lightText.textContent = searchlight;
+  }
+
+  /** Placement readouts while setting a part down on an assembly. Pass undefined to hide them. */
+  updatePlacement(p: PlacementHudState | undefined): void {
+    this.placement.style.display = p ? 'block' : 'none';
+    if (!p) return;
+    const grade = (e: HTMLElement, ok: boolean, near: boolean) => {
+      e.classList.toggle('ok', ok);
+      e.classList.toggle('near', !ok && near);
+    };
+    this.placementTitle.textContent = p.title;
+    this.heightValue.textContent = p.seated ? 'SEATED' : `${p.height >= 0 ? '+' : ''}${p.height.toFixed(1)} m`;
+    grade(this.heightValue, p.seated, p.height < 3);
+    const lateralOk = p.lateral <= p.lateralTolerance;
+    this.offsetArrow.style.visibility = lateralOk ? 'hidden' : 'visible';
+    this.offsetArrow.style.transform = `rotate(${p.angle}rad)`;
+    this.offsetValue.textContent = ` ${p.lateral.toFixed(1)} m`;
+    grade(this.offsetValue.parentElement!, lateralOk, p.lateral <= p.lateralTolerance * 3);
+    const turnOk = Math.abs(p.turn) <= p.turnTolerance;
+    // The key that turns the load the right way: ] clockwise, [ anticlockwise.
+    this.turnValue.textContent = turnOk ? `${Math.abs(p.turn).toFixed(0)}° ✔` : `${p.turn > 0 ? ']' : '['} ${Math.abs(p.turn).toFixed(0)}°`;
+    grade(this.turnValue, turnOk, Math.abs(p.turn) <= p.turnTolerance * 3);
+    this.boltFill.style.width = `${(Math.min(1, p.bolt) * 100).toFixed(1)}%`;
+    this.boltText.textContent = `${(p.bolt * p.boltSeconds).toFixed(1)}/${p.boltSeconds} s`;
   }
 
   /** Cloud fog over the view, 0 (clear) to 1 (white-out). */

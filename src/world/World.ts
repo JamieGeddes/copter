@@ -3,7 +3,7 @@ import { Bounds, pointInSolid, Solid } from './collision';
 import { BuildingDef, LevelDef, PadDef, WireKind } from './level';
 import { Terrain } from './Terrain';
 import { Noise2D } from './noise';
-import { LocalWind, Wind } from './Wind';
+import { aloftFactor, LocalWind, Wind } from './Wind';
 
 export const PAD_HEIGHT = 0.3;
 /** How far a cable car wire sags at mid-span, in metres. */
@@ -159,6 +159,15 @@ export class World {
     }
   }
 
+  /**
+   * Adds something built during the mission, such as a mast section bolted in place. It blocks the
+   * aircraft and loads like a building, and a landable top supports loads set down on it.
+   */
+  addSolid(solid: Solid): void {
+    this.solids.push(solid);
+    if (solid.landable) this.landables.push(solid);
+  }
+
   /** Height of whatever the aircraft would rest on: terrain, sea, a rooftop or a pad. */
   groundHeightAt(x: number, z: number): number {
     let h = this.terrain.heightAt(x, z);
@@ -178,6 +187,17 @@ export class World {
     const w = this.wind;
     if (!w) return { x: 0, z: 0, up: 0, turbulence: 0 };
     if (w.def.channel) return this.cityWind(x, z, y);
+    const local = this.terrainWind(x, z, y);
+    const k = aloftFactor(w.def, y);
+    if (k !== 1) {
+      local.x *= k;
+      local.z *= k;
+    }
+    return local;
+  }
+
+  private terrainWind(x: number, z: number, y: number): LocalWind {
+    const w = this.wind!;
     const k = w.def.orographic ?? 0;
     if (!k) return { x: w.x, z: w.z, up: 0, turbulence: 0 };
     const t = this.terrain;

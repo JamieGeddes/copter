@@ -131,6 +131,7 @@ export class App {
         if (kb.wasPressed('action')) this.session.action();
         if (kb.wasPressed('heightLine')) this.session.toggleHeightLine();
         if (kb.wasPressed('searchlight')) this.session.cycleSearchlight();
+        if (kb.wasPressed('precisionCamera')) this.session.togglePrecisionCamera();
         this.session.update(dt, axesFromKeys(kb.held));
         if (this.session.outcome) {
           this.screen = 'ending';

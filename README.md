@@ -21,6 +21,8 @@ npm run build    # production build in dist/
 | + / − / mouse wheel | Zoom |
 | E | Release slung load / drop bucket water |
 | F | Searchlight: auto, locked ahead or off (Night Medevac) |
+| [ / ] or , / . | Turn the slung load anticlockwise / clockwise (Sky Crane) |
+| C | Precision camera on or off (Sky Crane) |
 | L | Toggle height line |
 | M | Mute |
 | P / Esc | Pause |
@@ -34,7 +36,7 @@ npm run build    # production build in dist/
 |---|---|
 | `src/core` | App state machine (menus, progress), level session |
 | `src/levels` | Level and mission data, campaign order |
-| `src/missions` | Mission runner, rescue winch, landing pickups, casualty queue, slung cargo, water bucket, medals |
+| `src/missions` | Mission runner, rescue winch, landing pickups, casualty queue, slung cargo, assembly, water bucket, medals |
 | `src/heli` | Flight model, helicopter specs, models and rotors |
 | `src/world` | Terrain generation (desert, coast, floodplain, forest, alpine, city), city layout, traffic, wind (mountain air, gusts between towers), wires, collision, crowd behaviour, fire spread model and fuel map |
 | `src/render` | Renderer, isometric camera, terrain, water, props, lit windows, night lights, searchlight, traffic, cloud layer, mission, incident, bucket and fire visuals |
@@ -54,14 +56,14 @@ npm run build    # production build in dist/
 | 4 | Wildfire | Bucketeer FH-2 | Route planning and timing | Playable |
 | 5 | Mountain Rescue | Chamois AS-5 | Terrain flying in thin air | Playable |
 | 6 | Night Medevac | Lifeline EC-1 | Speed and tight landings | Playable |
-| 7 | Sky Crane | Mantis S-64 | Precise placement | Planned |
+| 7 | Sky Crane | Mantis MK-9 | Precise placement | Playable |
 | 8 | Convoy Escort | Viper AH-6 | Combat and awareness | Planned |
 
 Missions unlock in order. Best times and medals are saved in the browser's local storage.
 
 ## Adding a level
 
-A level is a `LevelDef` in `src/levels/`: terrain config, buildings, pads, roads, crowds, scenery, optional sea and wind, and a `MissionDef` with an ordered list of objectives (`takeoff`, `hover`, `gates`, `land`, `rescue`, `deliver`, `hook`, `place`, `fill`, `protect`, `extinguish`, `casualties`). Add it to `CAMPAIGN` in `src/levels/index.ts`; `tests/levels.test.ts` checks the data automatically.
+A level is a `LevelDef` in `src/levels/`: terrain config, buildings, pads, roads, crowds, scenery, optional sea and wind, and a `MissionDef` with an ordered list of objectives (`takeoff`, `hover`, `gates`, `land`, `rescue`, `deliver`, `hook`, `place`, `assemble`, `fill`, `protect`, `extinguish`, `casualties`). Add it to `CAMPAIGN` in `src/levels/index.ts`; `tests/levels.test.ts` checks the data automatically.
 
 ## Wildfire
 
@@ -93,3 +95,15 @@ Varrow uses the `city` terrain kind: level paved ground, parks and a river betwe
 - **Wind between towers:** with `wind.channel`, wind along a street between tall buildings speeds up and gusts, and drops but churns in a tower's lee.
 
 `tests/medevac.test.ts` covers the casualty queue and objective, traffic, city wind, wires, the city layout and the Varrow balance (scenes clear of obstacles and wires, both hospitals used, calls that overlap but can be answered in time).
+
+## Sky Crane
+
+Kesselkopf reuses the `alpine` terrain kind: a construction yard on the valley floor, a road that gives out halfway up a spur, and a bare summit with a concrete footing, a site hut and a ground crew. The Mantis MK-9 flying crane carries four lattice mast sections and an antenna up on a 20 m line.
+
+- **Assembly:** an `assemble` objective (`src/missions/Assembly.ts`) stacks parts on a seat at a set heading. Each part seats on top of those already fixed, so the target rises as the stack grows; parts within one objective may go up in any order, and a later `assemble` at the same site (the antenna) goes on top. A part must be seated, within its position and heading tolerance, and still on the hook for its bolting time; any slip starts the bolting again. Once bolted, the crew unhook it and it becomes a solid in the world (`World.addSolid`): an obstacle for the aircraft and a seat for the next part.
+- **Load rotation:** `[` / `]` (or `,` / `.`) turn a hanging load on the hook. It spins up to a steady rate and coasts a few degrees after the key is released, so taps make fine corrections. A load sitting on a support does not turn.
+- **Placement guide:** an outline of the seat with an arrow for the front face (the ladder), a plumb line from the load, live height, offset and turn readouts graded against the tolerances, and a bolting bar. Near the seat the precision camera zooms in on the load; C turns it off.
+- **Wind at height:** `wind.aloft` strengthens the wind, gusts included, with height above sea level. Loads with `windage` are blown about while they hang, so the pilot holds upwind of the seat and times the touchdown between gusts. A seated load is held by friction.
+- **Ground crew:** people run from a load swinging low near them, and a load hitting someone fails the mission.
+
+`tests/skyCrane.test.ts` covers the assembly geometry and objective, load rotation, wind on loads, stacking, the crew, and the Kesselkopf balance (the wind sets a hanging section well off its mark and swings it, within limits, and the antenna is hard but possible to hold).

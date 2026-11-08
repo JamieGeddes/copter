@@ -1,10 +1,13 @@
 import { wrapAngle } from '../core/math';
+import { AssembleObjective, assemblyFit, AssemblyFit, seatHeight } from './Assembly';
 import { Medevac, MedevacEvent } from './Medevac';
-import { GateDef, MissionDef, ObjectiveDef } from './types';
+import { AssemblyPart, GateDef, MissionDef, ObjectiveDef } from './types';
 
 export interface CargoSnapshot {
   id: string;
   x: number;
+  /** Height of the load's base (needed for assembly). */
+  y?: number;
   z: number;
   heading: number;
   resting: boolean;
@@ -66,6 +69,8 @@ export type MissionEvent =
   | { type: 'cloudWarning'; site: string }
   /** Something happened to a casualty on a medevac mission. */
   | { type: 'casualty'; event: MedevacEvent }
+  /** An assembly part has been bolted on: fix it in place at the seat. */
+  | { type: 'partFixed'; id: string; index: number; total: number; x: number; y: number; z: number; heading: number }
   | { type: 'complete'; time: number }
   | { type: 'failed'; reason: string };
 
@@ -102,6 +107,12 @@ export class MissionRunner {
   private readonly cloudWarned = new Set<string>();
   /** Casualty queue, on missions with emergency calls. */
   readonly medevac?: Medevac;
+  /** Parts of the current assembly already bolted on, bottom first. */
+  readonly assembled: string[] = [];
+  /** Seconds the hooked part has been held in tolerance. */
+  boltTimer = 0;
+  /** How the hooked part sits against its seat, while assembling. */
+  fit?: AssemblyFit & { part: AssemblyPart; id: string };
 
   constructor(def: MissionDef) {
     this.def = def;
@@ -133,6 +144,10 @@ export class MissionRunner {
         return Math.min(1, this.protectHeld / o.seconds);
       case 'casualties':
         return (this.medevac?.delivered ?? 0) / o.casualties.length;
+      case 'assemble': {
+        const hold = this.fit ? Math.min(1, this.boltTimer / this.fit.part.seconds) : 0;
+        return (this.assembled.length + hold) / o.parts.length;
+      }
       default:
         return 0;
     }
@@ -161,6 +176,8 @@ export class MissionRunner {
         const m = this.medevac;
         return m ? `Delivered ${m.delivered} of ${o.casualties.length} · golden hour ${m.golden}` : '';
       }
+      case 'assemble':
+        return o.parts.length > 1 ? `In place: ${this.assembled.length} of ${o.parts.length}` : '';
       default:
         return '';
     }
@@ -204,11 +221,24 @@ export class MissionRunner {
     return o?.kind === 'place' ? o : undefined;
   }
 
+  /** The active assembly, if any. */
+  get assembleTarget(): AssembleObjective | undefined {
+    const o = this.objective;
+    return o?.kind === 'assemble' ? o : undefined;
+  }
+
+  /** Height of the top of the stack the next part sits on. */
+  get seatY(): number | undefined {
+    const o = this.assembleTarget;
+    return o ? seatHeight(o, this.assembled, this.def.cargo ?? []) : undefined;
+  }
+
   /** Loads the player should be working with now. */
   get activeCargo(): string[] {
     const o = this.objective;
     if (o?.kind === 'hook') return [o.cargo];
     if (o?.kind === 'place') return o.cargo;
+    if (o?.kind === 'assemble') return o.parts.map((p) => p.cargo).filter((id) => !this.assembled.includes(id));
     return [];
   }
 
@@ -257,6 +287,9 @@ export class MissionRunner {
       this.gateIndex = 0;
       this.unloadTimer = 0;
       this.protectHeld = 0;
+      this.assembled.length = 0;
+      this.boltTimer = 0;
+      this.fit = undefined;
       dt = 0;
     }
     if (!this.objective) {
@@ -315,6 +348,8 @@ export class MissionRunner {
       }
       case 'deliver':
         return this.unload(dt, s, o.pad, events) && this.onboard === 0;
+      case 'assemble':
+        return this.assemble(dt, s, o, events);
       case 'casualties': {
         const m = this.medevac;
         if (!m) return true;
@@ -328,6 +363,35 @@ export class MissionRunner {
         return o.casualties.every((id) => m.status(id).state === 'delivered');
       }
     }
+  }
+
+  /**
+   * The hooked part, once seated on the stack in position and lined up, must be held there while
+   * the crew bolt it on. Any slip out of tolerance starts the bolting again.
+   */
+  private assemble(dt: number, s: MissionSnapshot, o: AssembleObjective, events: MissionEvent[]): boolean {
+    const remaining = o.parts.filter((p) => !this.assembled.includes(p.cargo));
+    const load = s.cargo?.find((c) => c.hooked && remaining.some((p) => p.cargo === c.id));
+    const part = load && remaining.find((p) => p.cargo === load.id);
+    if (!load || !part) {
+      this.fit = undefined;
+      this.boltTimer = 0;
+      return remaining.length === 0;
+    }
+    const seatY = seatHeight(o, this.assembled, this.def.cargo ?? []);
+    const fit = assemblyFit({ x: load.x, y: load.y ?? 0, z: load.z, heading: load.heading, resting: load.resting }, part, o, seatY);
+    this.fit = { ...fit, part, id: load.id };
+    this.boltTimer = fit.ok ? this.boltTimer + dt : 0;
+    if (this.boltTimer < part.seconds) return false;
+    this.assembled.push(load.id);
+    this.placed.add(load.id);
+    this.boltTimer = 0;
+    this.fit = undefined;
+    // Square the part up on its seat: the turn that fits nearest to how it was set down.
+    const step = (Math.PI * 2) / (part.symmetry ?? 1);
+    const heading = o.heading + Math.round(wrapAngle(load.heading - o.heading) / step) * step;
+    events.push({ type: 'partFixed', id: load.id, index: this.assembled.length, total: o.parts.length, x: o.x, y: seatY, z: o.z, heading });
+    return this.assembled.length === o.parts.length;
   }
 
   /** Lets passengers off one at a time while landed on the pad. Returns true while on the pad. */

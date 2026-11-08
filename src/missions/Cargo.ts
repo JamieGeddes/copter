@@ -1,7 +1,7 @@
-import { approachAngle, smoothstep } from '../core/math';
+import { approachAngle, smoothstep, wrapAngle } from '../core/math';
 import { pointInSolid, Solid } from '../world/collision';
 
-export type CargoKind = 'girder' | 'generator' | 'pallet';
+export type CargoKind = 'girder' | 'generator' | 'pallet' | 'mastSection' | 'antenna';
 
 export interface CargoDef {
   id: string;
@@ -16,6 +16,11 @@ export interface CargoDef {
   w: number;
   h: number;
   d: number;
+  /**
+   * How strongly the wind catches the load while it hangs or falls, as a drag rate towards the
+   * wind's speed (1/s). Unset or 0 for compact loads the wind barely moves.
+   */
+  windage?: number;
 }
 
 export interface CargoEnv {
@@ -23,6 +28,8 @@ export interface CargoEnv {
   isWater(x: number, z: number): boolean;
   solids: readonly Solid[];
   seaLevel?: number;
+  /** Wind at a point in the air, for loads with windage. */
+  windAt?(x: number, z: number, y: number): { x: number; z: number };
 }
 
 /** The aircraft's cargo hook. */
@@ -59,6 +66,11 @@ const HOOK_SECONDS = 1;
 const SAFE_DROP = 2.5;
 const SWING_DAMPING = 0.3;
 const COUPLING = 0.6;
+/** Fastest a load turns on the hook under rotation control (rad/s). */
+export const LOAD_YAW_RATE = 0.45;
+/** How quickly the turn rate follows the control, and dies away once it is released (1/s). */
+const YAW_SPIN_UP = 2.5;
+const YAW_SPIN_DOWN = 4;
 
 export class CargoItem {
   readonly def: CargoDef;
@@ -70,6 +82,8 @@ export class CargoItem {
   vy = 0;
   vz = 0;
   heading: number;
+  /** Turn rate on the hook (rad/s, anticlockwise from above). */
+  yawRate = 0;
   damage = 0;
   resting = true;
   /** Fell in the water or was destroyed. */
@@ -121,6 +135,8 @@ export class CargoSystem {
   hint: CargoHint = 'none';
   /** Id of the load the hint refers to. */
   nearestId?: string;
+  /** Rotation control for the hooked load: +1 anticlockwise, -1 clockwise as seen from above. */
+  rotateInput = 0;
   private hookTimer = 0;
 
   constructor(defs: CargoDef[], env: CargoEnv, ropeLength: number) {
@@ -150,8 +166,10 @@ export class CargoSystem {
   release(): CargoEvent | undefined {
     if (!this.hooked) return undefined;
     const id = this.hooked.def.id;
+    this.hooked.yawRate = 0;
     this.hooked = undefined;
     this.hookTimer = 0;
+    this.hint = 'none';
     return { type: 'released', id };
   }
 
@@ -189,11 +207,20 @@ export class CargoSystem {
   private stepItem(item: CargoItem, dt: number, hook: HookState | null, env: CargoEnv, events: CargoEvent[]) {
     let dvx = 0;
     let dvz = 0;
+    const supported = item.resting;
     item.vy -= G * dt;
     const air = Math.exp(-0.1 * dt);
     item.vx *= air;
     item.vy *= air;
     item.vz *= air;
+    // Wind pushes a load clear of the ground; one sitting on a support is held by friction.
+    const windage = item.def.windage ?? 0;
+    if (windage > 0 && !supported && env.windAt) {
+      const w = env.windAt(item.x, item.z, item.y + item.def.h / 2);
+      const k = 1 - Math.exp(-windage * dt);
+      item.vx += (w.x - item.vx) * k;
+      item.vz += (w.z - item.vz) * k;
+    }
     if (hook) {
       // Damp the swing relative to the hook so loads settle after a few oscillations.
       const k = 1 - Math.exp(-SWING_DAMPING * dt);
@@ -233,7 +260,7 @@ export class CargoSystem {
         dvx += nx * tension * share;
         dvz += nz * tension * share;
       }
-      item.heading = approachAngle(item.heading, hook.heading, 1.2 * smoothstep(2, 6, hook.groundSpeed) * dt);
+      this.stepYaw(item, dt, hook, supported);
     }
 
     this.resolveSolids(item, px, py, pz, env.solids, events);
@@ -268,6 +295,23 @@ export class CargoSystem {
       }
     }
     return { dvx, dvz };
+  }
+
+  /**
+   * Turns a hanging load: under the rotation control it spins up towards a steady rate and coasts
+   * to a stop once released; otherwise it trails into line with the aircraft at speed. A load
+   * sitting on a support does not turn.
+   */
+  private stepYaw(item: CargoItem, dt: number, hook: HookState, supported: boolean): void {
+    if (supported) {
+      item.yawRate = 0;
+      return;
+    }
+    const input = Math.max(-1, Math.min(1, this.rotateInput));
+    const target = input * LOAD_YAW_RATE;
+    item.yawRate += (target - item.yawRate) * (1 - Math.exp(-(input !== 0 ? YAW_SPIN_UP : YAW_SPIN_DOWN) * dt));
+    item.heading = wrapAngle(item.heading + item.yawRate * dt);
+    if (input === 0) item.heading = approachAngle(item.heading, hook.heading, 1.2 * smoothstep(2, 6, hook.groundSpeed) * dt);
   }
 
   private resolveSolids(item: CargoItem, px: number, py: number, pz: number, solids: readonly Solid[], events: CargoEvent[]): void {

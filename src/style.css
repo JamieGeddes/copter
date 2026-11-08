@@ -786,3 +786,32 @@ kbd {
     opacity: 0.35;
   }
 }
+
+.placement {
+  right: 16px;
+  top: 38%;
+  width: 230px;
+  font-variant-numeric: tabular-nums;
+}
+
+.placement-title {
+  font-weight: 800;
+  color: var(--amber);
+  margin-bottom: 4px;
+}
+
+.placement .label {
+  width: 58px;
+}
+
+.placement .value.near {
+  color: var(--amber);
+}
+
+.placement .value.ok {
+  color: #b7f5a0;
+}
+
+.offset-arrow {
+  display: inline-block;
+}

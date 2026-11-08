@@ -428,6 +428,15 @@ const buildingParts = (b: PlacedBuilding, rng: () => number, walls: BufferGeomet
       }
       break;
     }
+    case 'footing': {
+      parts.push(part(box(w, h + SINK, d), 0xb4b0a6, { y: (h - SINK) / 2 }));
+      parts.push(part(box(w * 0.7, 0.08, d * 0.7), 0xa29e94, { y: h + 0.04 }));
+      // Anchor plates and bolts where the mast's four legs stand.
+      for (const [x, z] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+        parts.push(part(box(0.55, 0.1, 0.55), 0x3b3d42, { x: x * 1.2, y: h + 0.05, z: z * 1.2 }));
+      }
+      break;
+    }
     case 'powerPylon': {
       lattice(parts, w / 2, 0.6, h, 0x9aa0a6, 4, 0.16);
       for (const y of [h - 0.5, h - 5]) parts.push(part(box(0.3, 0.3, 9), 0x9aa0a6, { y }));

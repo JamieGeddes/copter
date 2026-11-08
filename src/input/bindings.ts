@@ -14,6 +14,11 @@ export const BINDINGS = {
   mute: ['KeyM'],
   heightLine: ['KeyL'],
   searchlight: ['KeyF'],
+  /** Turn a slung load on its hook: anticlockwise and clockwise as seen from above. */
+  rotateLeft: ['BracketLeft', 'Comma'],
+  rotateRight: ['BracketRight', 'Period'],
+  /** Precision camera, which zooms in on a load being placed. */
+  precisionCamera: ['KeyC'],
   confirm: ['Enter', 'NumpadEnter'],
   back: ['Escape', 'Backspace'],
   restart: ['KeyR'],
@@ -37,6 +42,8 @@ export interface ControlAxes {
   y: number;
   /** +1 climb, -1 descend. */
   climb: number;
+  /** Load rotation: +1 anticlockwise, -1 clockwise as seen from above. */
+  rotate: number;
 }
 
 export const isActive = (held: ReadonlySet<string>, action: Action): boolean =>
@@ -52,5 +59,6 @@ export const axesFromKeys = (held: ReadonlySet<string>): ControlAxes => {
     y /= len;
   }
   const climb = (isActive(held, 'climb') ? 1 : 0) - (isActive(held, 'descend') ? 1 : 0);
-  return { x, y, climb };
+  const rotate = (isActive(held, 'rotateLeft') ? 1 : 0) - (isActive(held, 'rotateRight') ? 1 : 0);
+  return { x, y, climb, rotate };
 };

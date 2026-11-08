@@ -33,6 +33,9 @@ export class IsoCamera {
   private speedZoom = 0;
   private reliefZoom = 0;
   private targetReliefZoom = 0;
+  /** Extra zoom for the precision camera: 1 normally, smaller when zoomed in on a load. */
+  private precision = 1;
+  private targetPrecision = 1;
   private readonly offset = new Vector3();
   private shakeAmount = 0;
   private readonly shakeOffset = new Vector3();
@@ -73,9 +76,17 @@ export class IsoCamera {
     this.targetReliefZoom = clamp((relief - 30) / 260, 0, 0.35);
   }
 
+  /**
+   * Zooms in for close work, such as setting a load down, by `factor` of the normal view (1 to
+   * zoom back out). Ignores the usual zoom limits.
+   */
+  setPrecision(factor: number): void {
+    this.targetPrecision = clamp(factor, 0.2, 1);
+  }
+
   /** Current visible world height in metres. */
   get visibleHeight(): number {
-    return this.viewHeight * (1 + this.speedZoom + this.reliefZoom);
+    return this.viewHeight * (1 + this.speedZoom + this.reliefZoom) * this.precision;
   }
 
   /** Moves the focus straight to a point (used on spawn). */
@@ -98,6 +109,7 @@ export class IsoCamera {
     this.viewHeight = damp(this.viewHeight, this.targetViewHeight, 5, dt);
     this.speedZoom = damp(this.speedZoom, speedFraction * 0.22, 1.2, dt);
     this.reliefZoom = damp(this.reliefZoom, this.targetReliefZoom, 0.6, dt);
+    this.precision = damp(this.precision, this.targetPrecision, 1.6, dt);
     this.shakeAmount = damp(this.shakeAmount, 0, 5, dt);
     this.apply();
   }

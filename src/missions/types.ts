@@ -35,6 +35,23 @@ export type ObjectiveDef =
    * roof of the hospital that treats them before their timer runs out.
    */
   | { kind: 'casualties'; text: string; casualties: string[] }
+  /**
+   * Build a stack: lower each part onto the one below at the given heading and hold it there while
+   * it is bolted on. Parts may go up in any order; each one seats on top of those already fixed,
+   * so the target rises as the stack grows. Objectives run in order, so a later `assemble` at the
+   * same site (an antenna, say) goes on top of an earlier one.
+   */
+  | {
+      kind: 'assemble';
+      text: string;
+      label: string;
+      x: number;
+      z: number;
+      /** Height of the seat for the first part: the top of the footing or of the stack below. */
+      y: number;
+      heading: number;
+      parts: AssemblyPart[];
+    }
   | {
       kind: 'place';
       text: string;
@@ -48,6 +65,20 @@ export type ObjectiveDef =
       heading?: number;
       headingTolerance?: number;
     };
+
+/** One part of an assembly and how precisely it must be set down. */
+export interface AssemblyPart {
+  /** Id of the load. */
+  cargo: string;
+  /** Furthest the load's centre may be from the seat's centre, in metres. */
+  radius: number;
+  /** Largest heading error allowed, in radians. */
+  headingTolerance: number;
+  /** Seconds the load must be held seated and in tolerance while the crew bolt it on. */
+  seconds: number;
+  /** Quarter turns etc. that fit equally well: 1 (default) means only one heading fits. */
+  symmetry?: number;
+}
 
 export type SurvivorPlacement = 'water' | 'boat' | 'rocks' | 'ledge' | 'snow';
 

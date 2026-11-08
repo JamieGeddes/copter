@@ -271,6 +271,42 @@ export const LIFELINE: HeliSpec = {
   maxAltitude: 160,
 };
 
+/**
+ * Flying crane: a skeletal spine with no cabin, built to hover over a load for minutes at a time.
+ * Slow and deliberate, but much stronger than the Hauler and rock steady in the hover, with a long
+ * line and a load that can be turned on the hook.
+ */
+export const MANTIS: HeliSpec = {
+  id: 'mantis',
+  name: 'Mantis MK-9',
+  role: 'Flying crane',
+  maxSpeed: 40,
+  acceleration: 6,
+  cyclicResponse: 1.7,
+  brakeAssist: 1.4,
+  cushionSink: 1.4,
+  cushionGain: 0.7,
+  windFactor: 0.4,
+  maxTilt: 0.13,
+  climbRate: 7,
+  collectiveResponse: 1.8,
+  yawRate: 0.9,
+  spoolRate: 0.2,
+  fuelEndurance: 1300,
+  safeSinkRate: 2.5,
+  safeGroundSpeed: 3.5,
+  crashSpeed: 9,
+  mass: 13000,
+  bladeRate: 12,
+  slingLength: 20,
+  hookHeight: 2.4,
+  bodyRadius: 2.4,
+  bodyHeight: 7.2,
+  rotorRadius: 11,
+  rotorHeight: 7.7,
+  maxAltitude: 160,
+};
+
 export const AIRCRAFT: Record<string, HeliSpec> = {
   [KESTREL.id]: KESTREL,
   [ALBATROSS.id]: ALBATROSS,
@@ -278,4 +314,5 @@ export const AIRCRAFT: Record<string, HeliSpec> = {
   [BUCKETEER.id]: BUCKETEER,
   [CHAMOIS.id]: CHAMOIS,
   [LIFELINE.id]: LIFELINE,
+  [MANTIS.id]: MANTIS,
 };

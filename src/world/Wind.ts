@@ -18,7 +18,20 @@ export interface WindDef {
    * both sides speed it up and gust, and the lee of a tower is sheltered but churning.
    */
   channel?: number;
+  /**
+   * Wind that strengthens with height above sea level, gusts included: from `from` metres it grows
+   * steadily to `gain` times as strong at `to` metres and above.
+   */
+  aloft?: { from: number; to: number; gain: number };
 }
+
+/** How much stronger the wind is at height `y` than at the bottom of the level. */
+export const aloftFactor = (def: WindDef, y: number): number => {
+  const a = def.aloft;
+  if (!a) return 1;
+  const t = Math.min(1, Math.max(0, (y - a.from) / (a.to - a.from)));
+  return 1 + (a.gain - 1) * t;
+};
 
 /** Wind at a point: horizontal vector and rising air, all in m/s, with a 0..1 turbulence level. */
 export interface LocalWind {

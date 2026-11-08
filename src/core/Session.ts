@@ -7,6 +7,7 @@ import { Helicopter } from '../heli/Helicopter';
 import { AIRCRAFT, PASSENGER_MASS } from '../heli/HeliSpec';
 import { createHeliModel } from '../heli/models';
 import { ControlAxes } from '../input/bindings';
+import { loadHitsPerson } from '../missions/Assembly';
 import { Boarding, BoardingHint } from '../missions/Boarding';
 import { Bucket, BucketEnv, BucketHint, Spray } from '../missions/Bucket';
 import { CargoEvent, CargoHint, CargoSystem } from '../missions/Cargo';
@@ -30,9 +31,9 @@ import { createProps } from '../render/props';
 import { Stage } from '../render/Stage';
 import { createTerrainMesh } from '../render/TerrainMesh';
 import { createWater, Water } from '../render/WaterMesh';
-import { CallHudItem, Hud, Waypoint } from '../ui/Hud';
+import { CallHudItem, Hud, PlacementHudState, Waypoint } from '../ui/Hud';
 import { clamp, damp } from './math';
-import { CrowdSim } from '../world/CrowdSim';
+import { CrowdSim, Threat } from '../world/CrowdSim';
 import { FireGrid } from '../world/FireGrid';
 import { createFireGrid } from '../world/fuel';
 import { LevelDef } from '../world/level';
@@ -88,6 +89,14 @@ const BUCKET_TEXT: Record<BucketHint, string> = {
 /** Heat updraft and turbulence are felt within this distance of the fire. */
 const HEAT_RADIUS = 45;
 const FIRE_STEP = 0.1;
+
+/** Precision camera: how far it zooms in, and how close the load must be to the seat. */
+const PRECISION_ZOOM = 0.42;
+const PRECISION_RANGE = 45;
+/** Placement readouts show within this distance of the seat. */
+const PLACEMENT_RANGE = 60;
+/** A load swinging lower than this over the ground frightens people near it. */
+const LOAD_THREAT_HEIGHT = 12;
 
 const HOOK_TEXT: Record<Exclude<CargoHint, 'carrying'>, string> = {
   none: '',
@@ -185,6 +194,9 @@ export class Session {
   private readonly medevacVisuals?: MedevacVisuals;
   private readonly lightPos = new Vector3();
   private sceneFireBudget = 0;
+  /** Precision camera allowed (C toggles it), and whether it is zoomed in now. */
+  private precisionCamera = true;
+  private precisionActive = false;
 
   constructor(stage: Stage, container: HTMLElement, level: LevelDef, audio: RotorAudio, sfx: Sfx) {
     this.stage = stage;
@@ -277,7 +289,8 @@ export class Session {
     this.cloud = new Particles({ capacity: 500, colour: 0xeef2f5, opacity: 0.45, drag: 0.2, gravity: 0 });
     scene.add(this.dust.points, this.spray.points, this.smoke.points, this.fire.points, this.flare.points, this.cloud.points);
 
-    this.hud = new Hud(container, spec, level.name, { night: this.night });
+    const crane = level.mission.objectives.some((o) => o.kind === 'assemble');
+    this.hud = new Hud(container, spec, level.name, { night: this.night, crane });
     this.hud.setVisible(false);
 
     const pad = this.world.pad(level.spawnPad);
@@ -303,17 +316,20 @@ export class Session {
     const f = this.heli.flight;
     const input: FlightInput = { moveX: 0, moveZ: 0, climb: 0 };
     this.climbInput = axes && !this.outcome ? axes.climb : 0;
+    if (this.cargo) this.cargo.rotateInput = axes && !this.outcome ? axes.rotate : 0;
     if (axes && !this.outcome) {
       const w = screenToWorld(this.stage.iso.basis, axes.x, axes.y);
       input.moveX = w.x;
       input.moveZ = w.z;
       input.climb = axes.climb;
     }
-    // Lowering a slung load: ease the descent as it nears the ground so it isn't smashed.
+    // Lowering a slung load: ease the descent as it nears the ground so it isn't smashed. Aircraft
+    // that sink faster start easing off higher up.
     const held = this.cargo?.hooked;
     if (held && !held.resting && input.climb < 0) {
       const clear = held.y - this.cargo!.support(held, this.world).h;
-      if (clear < 5) input.climb = Math.max(input.climb, -(0.2 + Math.max(0, clear) * 0.12));
+      const band = Math.max(5, f.spec.climbRate * 1.3);
+      if (clear < band) input.climb = Math.max(input.climb, -(0.2 + (Math.max(0, clear) * 0.6) / band));
     }
     this.accumulator += dt;
     while (this.accumulator >= PHYSICS_DT) {
@@ -579,6 +595,13 @@ export class Session {
     return o?.kind === 'protect' ? o : undefined;
   }
 
+  /** The precision camera key: lets the camera zoom in on a load being placed, or not. */
+  togglePrecisionCamera(): void {
+    if (!this.cargo) return;
+    this.precisionCamera = !this.precisionCamera;
+    this.hud.message(this.precisionCamera ? 'Precision camera: on near the seat' : 'Precision camera off', 1.6);
+  }
+
   /** The action key: drop water, or release the slung load. */
   action(): void {
     if (this.bucket) {
@@ -652,7 +675,7 @@ export class Session {
     const groundY = this.world.groundHeightAt(f.x, f.z);
     this.heli.sync(dt, groundY);
     this.water?.update(this.time);
-    this.crowd.update(dt, f.destroyed ? undefined : { x: f.x, z: f.z, agl: f.y - groundY });
+    this.crowd.update(dt, this.crowdThreats(groundY));
     this.crowdMesh.update();
     this.spawnEffects(dt, groundY);
     for (const p of [this.dust, this.spray, this.smoke, this.fire, this.flare, this.cloud]) {
@@ -678,8 +701,38 @@ export class Session {
         this.reliefTimer = 0.3;
         this.stage.iso.setRelief(this.relief(f.x, f.z));
       }
-      this.stage.iso.follow(dt, f.x, groundY + (f.y - groundY) * 0.75, f.z, f.vx, f.vz, f.groundSpeed / f.spec.maxSpeed, this.cameraLimits());
+      const t = this.cameraTarget(groundY);
+      this.stage.iso.follow(dt, t.x, t.y, t.z, t.vx, t.vz, t.speed, this.cameraLimits());
     }
+  }
+
+  /** What the crowd runs from: a low aircraft, and a load swinging close to the ground. */
+  private crowdThreats(groundY: number): Threat[] {
+    const f = this.heli.flight;
+    const out: Threat[] = [];
+    if (!f.destroyed) out.push({ x: f.x, z: f.z, agl: f.y - groundY });
+    const load = this.cargo?.hooked;
+    if (load && !load.resting) {
+      const agl = load.y - this.world.terrain.heightAt(load.x, load.z);
+      if (agl < LOAD_THREAT_HEIGHT) out.push({ x: load.x, z: load.z, agl, reach: Math.max(load.def.w, load.def.d) / 2 + 4 + load.speed * 2.5 });
+    }
+    return out;
+  }
+
+  /** The camera follows the load while one is being set down on an assembly, zoomed in. */
+  private cameraTarget(groundY: number): { x: number; y: number; z: number; vx: number; vz: number; speed: number } {
+    const f = this.heli.flight;
+    const fit = this.runner.fit;
+    const load = this.cargo?.hooked;
+    const o = this.runner.assembleTarget;
+    this.precisionActive =
+      this.precisionCamera && !!fit && !!load && !!o && fit.lateral < PRECISION_RANGE && fit.height < PRECISION_RANGE && this.runner.status === 'running';
+    this.stage.iso.setPrecision(this.precisionActive ? PRECISION_ZOOM : 1);
+    if (this.precisionActive && load && o) {
+      // Between the load and its seat, so both stay in shot.
+      return { x: load.x * 0.75 + o.x * 0.25, y: load.y, z: load.z * 0.75 + o.z * 0.25, vx: 0, vz: 0, speed: 0 };
+    }
+    return { x: f.x, y: groundY + (f.y - groundY) * 0.75, z: f.z, vx: f.vx, vz: f.vz, speed: f.groundSpeed / f.spec.maxSpeed };
   }
 
   /** Spread of ground heights around a point, for widening the view over steep ground. */
@@ -745,6 +798,7 @@ export class Session {
       cargo: this.cargo?.items.map((it) => ({
         id: it.def.id,
         x: it.x,
+        y: it.y,
         z: it.z,
         heading: it.heading,
         resting: it.resting,
@@ -805,10 +859,58 @@ export class Session {
       }
     }
 
+    this.checkLoadStrikes();
     for (const e of this.runner.update(dt, snap)) this.onMissionEvent(e);
     // Delivered loads are fixed in place.
     if (this.cargo) for (const id of this.runner.placed) this.cargo.item(id).fixed = true;
     this.spotSurvivors();
+  }
+
+  /** A load swinging or falling into one of the crew on the ground loses the mission. */
+  private checkLoadStrikes(): void {
+    if (!this.cargo || this.runner.status !== 'running') return;
+    for (const item of this.cargo.items) {
+      if (item.resting || item.fixed || item.lost) continue;
+      for (const p of this.crowd.people) {
+        if (!loadHitsPerson(item, p, this.world.terrain.heightAt(p.x, p.z))) continue;
+        const reason = `${item.def.label} struck a member of the ground crew`;
+        this.runner.abort(reason);
+        this.sfx.play('fail');
+        this.stage.iso.shake(0.8);
+        this.finish(false, reason);
+        return;
+      }
+    }
+  }
+
+  /**
+   * The crew have bolted a part on: they unhook it, and it is squared up on its seat and becomes
+   * part of the structure, solid to the aircraft and a seat for the next part.
+   */
+  private fixPart(e: Extract<MissionEvent, { type: 'partFixed' }>): void {
+    const c = this.cargo;
+    if (!c) return;
+    const item = c.item(e.id);
+    if (c.hooked === item) {
+      const r = c.release();
+      if (r) this.onCargoEvent(r);
+    }
+    item.x = e.x;
+    item.y = e.y;
+    item.z = e.z;
+    item.heading = e.heading;
+    item.vx = item.vy = item.vz = 0;
+    item.yawRate = 0;
+    item.resting = true;
+    item.fixed = true;
+    const sin = Math.abs(Math.sin(e.heading));
+    const cos = Math.abs(Math.cos(e.heading));
+    const hx = (item.def.w * cos + item.def.d * sin) / 2;
+    const hz = (item.def.w * sin + item.def.d * cos) / 2;
+    this.world.addSolid({ minX: e.x - hx, maxX: e.x + hx, minZ: e.z - hz, maxZ: e.z + hz, top: e.y + item.def.h, landable: true });
+    this.sfx.play('attach');
+    const more = e.index < e.total;
+    this.hud.message(more ? `${item.def.label} bolted on (${e.index} of ${e.total}): fetch the next` : `${item.def.label} bolted on`, 3);
   }
 
   private spotSurvivors(): void {
@@ -845,6 +947,9 @@ export class Session {
         break;
       case 'casualty':
         this.onCasualtyEvent(e.event);
+        break;
+      case 'partFixed':
+        this.fixPart(e);
         break;
       case 'passengerUnloaded':
         this.sfx.play('unload');
@@ -903,6 +1008,8 @@ export class Session {
       stats.push(['Casualties', `${m.delivered} of ${m.casualties.length}`]);
       stats.push(['Golden hour', `${m.golden} of ${m.casualties.length}`]);
     }
+    const parts = this.level.mission.objectives.flatMap((o) => (o.kind === 'assemble' ? o.parts.map((q) => q.cargo) : []));
+    if (parts.length) stats.push(['Parts fitted', `${parts.filter((id) => this.runner.placed.has(id)).length} of ${parts.length}`]);
     if (this.cargo) stats.push(['Cargo damage', `${Math.round(this.cargoDamage * 100)}%`]);
     if (this.blaze && this.bucket) {
       stats.push(['Fire area', `${(this.blaze.burnedArea / 10000).toFixed(1)} ha`]);
@@ -1024,6 +1131,7 @@ export class Session {
     }
     const held = this.cargo?.hooked;
     this.hud.updateLoad(held ? { mass: held.def.mass, damage: held.damage } : undefined);
+    this.hud.updatePlacement(this.placementHud());
     if (this.blaze && this.bucket) {
       this.hud.updateFire({
         threat: this.threat,
@@ -1153,11 +1261,57 @@ export class Session {
     }
   }
 
+  /** Placement readouts for the part being set down on an assembly. */
+  private placementHud(): PlacementHudState | undefined {
+    const fit = this.runner.fit;
+    const o = this.runner.assembleTarget;
+    if (!fit || !o || !this.cargo || this.runner.status !== 'running' || fit.lateral > PLACEMENT_RANGE) return undefined;
+    const def = this.cargo.item(fit.id).def;
+    const b = this.stage.iso.basis;
+    const n = o.parts.length;
+    return {
+      title: n > 1 ? `${def.label} ${this.runner.assembled.length + 1} of ${n}` : def.label,
+      height: fit.height,
+      seated: fit.seated,
+      lateral: fit.lateral,
+      lateralTolerance: fit.part.radius,
+      angle: Math.atan2(fit.dx * b.rightX + fit.dz * b.rightZ, fit.dx * b.upX + fit.dz * b.upZ),
+      turn: (fit.heading * 180) / Math.PI,
+      turnTolerance: (fit.part.headingTolerance * 180) / Math.PI,
+      bolt: Math.min(1, this.runner.boltTimer / fit.part.seconds),
+      boltSeconds: fit.part.seconds,
+    };
+  }
+
+  /** Guidance while assembling: line the part up, set it down, and hold it while it is bolted. */
+  private assemblyAssist(): [string, boolean, number] | undefined {
+    const o = this.runner.assembleTarget;
+    const c = this.cargo!;
+    if (!o) return undefined;
+    const fit = this.runner.fit;
+    if (fit && c.hooked) {
+      const label = c.hooked.def.label;
+      if (fit.lateral > PLACEMENT_RANGE) return [`${label} · fly it to ${o.label}`, false, 0];
+      if (fit.ok) return ['Hold steady: crew bolting it on…', true, this.runner.boltTimer / fit.part.seconds];
+      if (fit.seated) return [fit.lateralOk ? 'Seated but not lined up: lift and turn it' : 'Seated off the mark: lift and adjust', false, 0];
+      return [fit.lateralOk && fit.headingOk ? 'Lined up: lower it gently' : 'Line it up over the outline', fit.lateralOk && fit.headingOk, 0];
+    }
+    // Let go on the seat: the crew will not bolt a part nobody is holding.
+    const seatY = this.runner.seatY ?? 0;
+    const loose = this.runner.activeCargo
+      .map((id) => c.item(id))
+      .find((it) => !c.hooked && it.resting && Math.hypot(it.x - o.x, it.z - o.z) < 4 && Math.abs(it.y - seatY) < 0.5);
+    if (loose && c.hint !== 'hooking') return ['Hook it back on: hold it while the crew bolt it', false, 0];
+    return undefined;
+  }
+
   /** Guidance for the cargo hook: how to hook up, and how far off the placement is. */
   private cargoAssist(): [string, boolean, number] {
     const c = this.cargo!;
-    if (c.hint !== 'carrying') return [HOOK_TEXT[c.hint], c.hint === 'hooking', c.hookProgress];
-    const load = c.hooked!;
+    const assembly = this.assemblyAssist();
+    if (assembly) return assembly;
+    const load = c.hooked;
+    if (c.hint !== 'carrying' || !load) return [c.hint === 'carrying' ? '' : HOOK_TEXT[c.hint], c.hint === 'hooking', c.hookProgress];
     const target = this.runner.placeTarget;
     if (!target || !target.cargo.includes(load.def.id)) return [`${load.def.label} · E to release`, false, 0];
     const dist = Math.hypot(load.x - target.x, load.z - target.z);
@@ -1240,6 +1394,8 @@ export class Session {
       const next = this.runner.activeCargo.map((id) => this.cargo!.item(id)).find((it) => !it.lost && this.cargo!.hooked !== it && !it.fixed);
       if (next && !this.cargo.hooked) out.push(this.project(next.x, next.y + next.def.h + 3, next.z, next.def.label, 'cargo'));
       if (placed && this.cargo.hooked) out.push(this.project(placed.x, this.world.groundHeightAt(placed.x, placed.z) + 6, placed.z, placed.label, 'pad'));
+      const site = this.runner.assembleTarget;
+      if (site && this.cargo.hooked && !this.precisionActive) out.push(this.project(site.x, (this.runner.seatY ?? 0) + 4, site.z, site.label, 'pad'));
     }
     const m = r.medevac;
     if (m && !m.aboard) {

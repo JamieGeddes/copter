@@ -4,6 +4,7 @@ import {
   BufferGeometry,
   CylinderGeometry,
   DoubleSide,
+  EdgesGeometry,
   Float32BufferAttribute,
   Group,
   Line,
@@ -14,6 +15,7 @@ import {
   Quaternion,
   RingGeometry,
   Scene,
+  SphereGeometry,
   Vector3,
 } from 'three';
 import { CargoDef, CargoItem, CargoSystem, SLING_APEX } from '../missions/Cargo';
@@ -24,6 +26,83 @@ import { merge, part, propMaterial, rod } from './geom';
 const AMBER = 0xffc04a;
 const GREEN = 0x6fe08a;
 const UP = new Vector3(0, 1, 0);
+const MAST_RED = 0xc8392b;
+const MAST_WHITE = 0xeeebe4;
+const LADDER = 0xe0b020;
+
+/**
+ * Square lattice mast section: four legs with flanges at each end, cross bracing on every face,
+ * and a ladder with a cable tray on the front face (+z), which has to line up with the one below.
+ */
+const mastSectionGeometry = (w: number, h: number, d: number): BufferGeometry[] => {
+  const p: BufferGeometry[] = [];
+  const hx = w / 2 - 0.1;
+  const hz = d / 2 - 0.1;
+  const corners: [number, number][] = [
+    [-hx, -hz],
+    [hx, -hz],
+    [hx, hz],
+    [-hx, hz],
+  ];
+  const bays = Math.max(2, Math.round(h / 1.75));
+  for (let i = 0; i < bays; i++) {
+    // Aviation red and white, alternating bay by bay.
+    const colour = i % 2 ? MAST_WHITE : MAST_RED;
+    const y0 = (h * i) / bays;
+    const y1 = (h * (i + 1)) / bays;
+    for (const [x, z] of corners) p.push(rod([x, y0, z], [x, y1, z], 0.1, colour, 6));
+    for (let c = 0; c < 4; c++) {
+      const [ax, az] = corners[c];
+      const [bx, bz] = corners[(c + 1) % 4];
+      p.push(rod([ax, y0, az], [bx, y1, bz], 0.05, colour, 4));
+      p.push(rod([bx, y0, bz], [ax, y1, az], 0.05, colour, 4));
+      p.push(rod([ax, y1, az], [bx, y1, bz], 0.06, colour, 4));
+    }
+  }
+  // Flanges at the foot and head of each leg, and the bottom frame.
+  for (const [x, z] of corners) {
+    for (const y of [0.06, h - 0.06]) p.push(part(new BoxGeometry(0.38, 0.12, 0.38), 0x3b3d42, { x, y, z }));
+  }
+  for (let c = 0; c < 4; c++) {
+    const [ax, az] = corners[c];
+    const [bx, bz] = corners[(c + 1) % 4];
+    p.push(rod([ax, 0.12, az], [bx, 0.12, bz], 0.07, MAST_RED, 4));
+  }
+  // Ladder and cable tray on the front face.
+  const fz = d / 2 + 0.12;
+  for (const x of [-0.25, 0.25]) p.push(part(new BoxGeometry(0.06, h, 0.06), LADDER, { x, y: h / 2, z: fz }));
+  for (let y = 0.3; y < h; y += 0.45) p.push(part(new BoxGeometry(0.5, 0.04, 0.04), LADDER, { y, z: fz }));
+  p.push(part(new BoxGeometry(0.3, h, 0.08), 0x8a8f96, { x: 0.65, y: h / 2, z: fz }));
+  return p;
+};
+
+/**
+ * Antenna top: a base frame that bolts to the mast head, a tall radome pole with panel aerials on
+ * three sides and a microwave dish on the front (+z), and a beacon on top.
+ */
+const antennaGeometry = (w: number, h: number, d: number): BufferGeometry[] => {
+  const p: BufferGeometry[] = [];
+  p.push(part(new BoxGeometry(w, 0.3, d), 0x7a7e84, { y: 0.15 }));
+  for (const [x, z] of [
+    [-1, -1],
+    [1, -1],
+    [1, 1],
+    [-1, 1],
+  ]) {
+    p.push(part(new BoxGeometry(0.38, 0.12, 0.38), 0x3b3d42, { x: x * (w / 2 - 0.1), y: 0.06, z: z * (d / 2 - 0.1) }));
+  }
+  p.push(part(new CylinderGeometry(0.32, 0.42, h - 0.6, 10), MAST_WHITE, { y: 0.3 + (h - 0.6) / 2 }));
+  for (const y of [h * 0.35, h * 0.7]) p.push(part(new CylinderGeometry(0.44, 0.44, 0.35, 10), MAST_RED, { y }));
+  // Panel aerials facing back and to each side.
+  for (const a of [Math.PI / 2, Math.PI, -Math.PI / 2]) {
+    p.push(part(new BoxGeometry(0.5, 1.8, 0.14), 0xdedad2, { x: Math.sin(a) * 0.55, y: h * 0.55, z: Math.cos(a) * 0.55, ry: a }));
+  }
+  // Microwave dish on the front face, pointing along the heading.
+  p.push(part(new CylinderGeometry(0.75, 0.6, 0.3, 16), MAST_WHITE, { y: h * 0.42, z: 0.75, rx: Math.PI / 2 }));
+  p.push(part(new CylinderGeometry(0.5, 0.5, 0.05, 16), 0x9aa0a6, { y: h * 0.42, z: 0.92, rx: Math.PI / 2 }));
+  p.push(part(new SphereGeometry(0.18, 8, 6), 0xff3a2a, { y: h - 0.2 }));
+  return p;
+};
 
 /** Low-poly model of a load, with its origin at the bottom centre. */
 const cargoGeometry = (def: CargoDef): BufferGeometry => {
@@ -59,6 +138,12 @@ const cargoGeometry = (def: CargoDef): BufferGeometry => {
       p.push(part(new CylinderGeometry(0.15, 0.15, h * 0.35, 8), 0x55585e, { y: h * 1.05, z: -d / 3 }));
       break;
     }
+    case 'mastSection':
+      p.push(...mastSectionGeometry(w, h, d));
+      break;
+    case 'antenna':
+      p.push(...antennaGeometry(w, h, d));
+      break;
     case 'pallet': {
       p.push(part(new BoxGeometry(w, 0.18, d), 0x9a7a52, { y: 0.09 }));
       p.push(part(new BoxGeometry(w * 0.92, h - 0.2, d * 0.92), 0x2f5f9a, { y: 0.18 + (h - 0.2) / 2 }));
@@ -85,6 +170,12 @@ export class CargoVisuals {
   private readonly ghost: Mesh;
   private readonly ghostMaterial: MeshBasicMaterial;
   private readonly zoneRing: Mesh;
+  /** Assembly guide: an outline of the seat, an arrow for the front face, and a plumb line. */
+  private readonly outline: LineSegments;
+  private readonly outlineMaterial: LineBasicMaterial;
+  private readonly facing: Mesh;
+  private readonly plumb: Line;
+  private readonly seatCross: LineSegments;
   private readonly world: World;
   private readonly q = new Quaternion();
   private readonly yaw = new Quaternion();
@@ -135,6 +226,25 @@ export class CargoVisuals {
     this.zoneRing.rotation.x = -Math.PI / 2;
     this.zoneRing.renderOrder = 4;
     this.root.add(this.zoneRing);
+
+    this.outlineMaterial = new LineBasicMaterial({ color: AMBER, transparent: true, opacity: 0.9, depthTest: false });
+    const box = new BoxGeometry(1, 1, 1);
+    box.translate(0, 0.5, 0);
+    this.outline = new LineSegments(new EdgesGeometry(box), this.outlineMaterial);
+    this.outline.renderOrder = 5;
+    // A flat arrow on the seat pointing the way the front face must look.
+    const arrow = new BufferGeometry();
+    arrow.setAttribute('position', new Float32BufferAttribute([-0.35, 0, 0.55, 0.35, 0, 0.55, 0, 0, 1.15], 3));
+    arrow.computeVertexNormals();
+    this.facing = new Mesh(arrow, new MeshBasicMaterial({ color: AMBER, transparent: true, opacity: 0.9, depthTest: false, side: DoubleSide }));
+    this.facing.renderOrder = 5;
+    this.plumb = new Line(line(2), new LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.7, depthTest: false }));
+    this.plumb.frustumCulled = false;
+    this.plumb.renderOrder = 5;
+    this.seatCross = new LineSegments(line(4), this.outlineMaterial);
+    this.seatCross.frustumCulled = false;
+    this.seatCross.renderOrder = 5;
+    this.root.add(this.outline, this.facing, this.plumb, this.seatCross);
   }
 
   setVisible(visible: boolean): void {
@@ -201,6 +311,8 @@ export class CargoVisuals {
     this.beacon.visible = !!toHook && !cargo.hooked;
     if (toHook) this.beacon.position.set(toHook.x, toHook.y, toHook.z);
 
+    this.updateAssembly(time, cargo, runner);
+
     // Placement target: a ghost of the load (for aligned placements) or a ring.
     const target = runner.placeTarget;
     this.ghost.visible = false;
@@ -226,6 +338,49 @@ export class CargoVisuals {
         this.zoneRing.scale.setScalar(target.radius);
         (this.zoneRing.material as MeshBasicMaterial).color.set(colour);
       }
+    }
+  }
+
+  /**
+   * Guide for the next part of an assembly: an outline of where it goes on top of the stack, an
+   * arrow for its front face, and a plumb line from the load down to the seat height with a cross
+   * at the seat. Green once it is in tolerance.
+   */
+  private updateAssembly(time: number, cargo: CargoSystem, runner: MissionRunner): void {
+    const o = runner.assembleTarget;
+    const seatY = runner.seatY;
+    const load = cargo.hooked && runner.activeCargo.includes(cargo.hooked.def.id) ? cargo.hooked : undefined;
+    const show = !!o && seatY !== undefined;
+    this.outline.visible = this.facing.visible = this.seatCross.visible = show;
+    this.plumb.visible = show && !!load;
+    if (!o || seatY === undefined) return;
+    const def = (load ?? runner.activeCargo.map((id) => cargo.item(id))[0])?.def;
+    if (!def) return;
+    const fit = runner.fit;
+    const colour = fit?.ok ? GREEN : fit && fit.lateralOk && fit.headingOk ? 0xc8f07a : AMBER;
+    this.outlineMaterial.color.set(colour);
+    this.outlineMaterial.opacity = 0.75 + Math.sin(time * 5) * 0.2;
+    (this.facing.material as MeshBasicMaterial).color.set(colour);
+    this.outline.position.set(o.x, seatY, o.z);
+    this.outline.rotation.set(0, o.heading, 0);
+    this.outline.scale.set(def.w, def.h, def.d);
+    this.facing.position.set(o.x, seatY + 0.05, o.z);
+    this.facing.rotation.set(0, o.heading, 0);
+    this.facing.scale.setScalar(Math.max(def.w, def.d));
+    const c = this.seatCross.geometry.getAttribute('position');
+    const r = 0.8;
+    c.setXYZ(0, o.x - r, seatY + 0.05, o.z);
+    c.setXYZ(1, o.x + r, seatY + 0.05, o.z);
+    c.setXYZ(2, o.x, seatY + 0.05, o.z - r);
+    c.setXYZ(3, o.x, seatY + 0.05, o.z + r);
+    c.needsUpdate = true;
+    if (load) {
+      const lv = this.loads.find((l) => l.item === load)!;
+      const base = lv.group.position;
+      const pl = this.plumb.geometry.getAttribute('position');
+      pl.setXYZ(0, base.x, base.y, base.z);
+      pl.setXYZ(1, base.x, Math.min(base.y, seatY), base.z);
+      pl.needsUpdate = true;
     }
   }
 
